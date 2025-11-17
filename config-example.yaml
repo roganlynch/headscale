@@ -139,9 +139,10 @@ disable_check_updates: false
 ephemeral_node_inactivity_timeout: 30m
 
 database:
-  # Database type. Available options: sqlite, postgres
+  # Database type. Available options: sqlite, postgres, turso
   # Please note that using Postgres is highly discouraged as it is only supported for legacy reasons.
   # All new development, testing and optimisations are done with SQLite in mind.
+  # Turso is a distributed SQLite-compatible database that can run in local, embedded-replica, or remote mode.
   type: sqlite
 
   # Enable debug mode. This setting requires the log.level to be set to "debug" or "trace".
@@ -191,6 +192,37 @@ database:
   #   # If other 'sslmode' is required instead of 'require(true)' and 'disabled(false)', set the 'sslmode' you need
   #   # in the 'ssl' field. Refers to https://www.postgresql.org/docs/current/libpq-ssl.html Table 34.1.
   #   ssl: false
+
+  # # Turso config
+  # # Turso is a distributed SQLite-compatible database (currently in BETA).
+  # # It supports three modes:
+  # # - local: Just a local database file (embedded SQLite)
+  # # - embedded-replica: Local SQLite file that syncs with Turso Cloud
+  # # - remote: Direct connection to Turso Cloud (requires network connectivity)
+  # turso:
+  #   # Mode: "local", "embedded-replica", or "remote"
+  #   mode: local
+  #
+  #   # Path to local database file (required for "local" and "embedded-replica" modes)
+  #   path: /var/lib/headscale/db.turso
+  #
+  #   # Remote database URL (required for "embedded-replica" and "remote" modes)
+  #   # Example: libsql://my-db-user.turso.io
+  #   url: ""
+  #
+  #   # Authentication token (required for "embedded-replica" and "remote" modes)
+  #   # Generate from Turso dashboard or CLI
+  #   auth_token: ""
+  #
+  #   # Sync interval for embedded replicas (default: 5m)
+  #   # Only applies to "embedded-replica" mode
+  #   sync_interval: 5m
+  #
+  #   # Enable WAL mode for local/embedded-replica modes
+  #   write_ahead_log: true
+  #
+  #   # WAL autocheckpoint threshold
+  #   wal_autocheckpoint: 1000
 
 ### TLS configuration
 #

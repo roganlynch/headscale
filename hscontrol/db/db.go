@@ -778,6 +778,9 @@ func openDB(cfg types.DatabaseConfig) (*gorm.DB, error) {
 		)
 
 		return db, nil
+
+	case types.DatabaseTurso:
+		return openTurso(cfg, dbLogger)
 	}
 
 	return nil, fmt.Errorf(

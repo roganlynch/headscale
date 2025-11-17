@@ -233,6 +233,7 @@
 
         checks = {
           headscale = pkgs.nixosTest (import ./nix/tests/headscale.nix);
+          turso = pkgs.nixosTest (import ./nix/tests/turso.nix);
         };
       });
 }

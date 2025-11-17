@@ -133,6 +133,27 @@ type PostgresConfig struct {
 	ConnMaxIdleTimeSecs int
 }
 
+type TursoConfig struct {
+	// Mode: "local", "embedded-replica", or "remote"
+	Mode string
+
+	// Path to local database file (for "local" and "embedded-replica" modes)
+	Path string
+
+	// Remote database URL (for "embedded-replica" and "remote" modes)
+	URL string
+
+	// Authentication token (for "embedded-replica" and "remote" modes)
+	AuthToken string
+
+	// Sync interval for embedded replicas (e.g., "1m", "5m")
+	SyncInterval time.Duration
+
+	// SQLite compatibility settings
+	WriteAheadLog     bool
+	WALAutoCheckPoint int
+}
+
 type GormConfig struct {
 	Debug                 bool
 	SlowThreshold         time.Duration
@@ -142,7 +163,7 @@ type GormConfig struct {
 }
 
 type DatabaseConfig struct {
-	// Type sets the database type, either "sqlite3" or "postgres"
+	// Type sets the database type, either "sqlite3", "postgres", or "turso"
 	Type  string
 	Debug bool
 
@@ -151,6 +172,7 @@ type DatabaseConfig struct {
 
 	Sqlite   SqliteConfig
 	Postgres PostgresConfig
+	Turso    TursoConfig
 }
 
 type TLSConfig struct {
@@ -320,6 +342,11 @@ func LoadConfig(path string, isFile bool) error {
 
 	viper.SetDefault("database.sqlite.write_ahead_log", true)
 	viper.SetDefault("database.sqlite.wal_autocheckpoint", 1000) // SQLite default
+
+	viper.SetDefault("database.turso.mode", "local")
+	viper.SetDefault("database.turso.write_ahead_log", true)
+	viper.SetDefault("database.turso.wal_autocheckpoint", 1000)
+	viper.SetDefault("database.turso.sync_interval", "5m")
 
 	viper.SetDefault("oidc.scope", []string{oidc.ScopeOpenID, "profile", "email"})
 	viper.SetDefault("oidc.only_start_if_oidc_is_available", true)
@@ -586,13 +613,13 @@ func databaseConfig() DatabaseConfig {
 	prepareStmt := viper.GetBool("database.gorm.prepare_stmt")
 
 	switch type_ {
-	case DatabaseSqlite, DatabasePostgres:
+	case DatabaseSqlite, DatabasePostgres, DatabaseTurso:
 		break
 	case "sqlite":
 		type_ = "sqlite3"
 	default:
 		log.Fatal().
-			Msgf("invalid database type %q, must be sqlite, sqlite3 or postgres", type_)
+			Msgf("invalid database type %q, must be sqlite, sqlite3, postgres, or turso", type_)
 	}
 
 	return DatabaseConfig{
@@ -624,6 +651,17 @@ func databaseConfig() DatabaseConfig {
 			ConnMaxIdleTimeSecs: viper.GetInt(
 				"database.postgres.conn_max_idle_time_secs",
 			),
+		},
+		Turso: TursoConfig{
+			Mode: viper.GetString("database.turso.mode"),
+			Path: util.AbsolutePathFromConfigPath(
+				viper.GetString("database.turso.path"),
+			),
+			URL:               viper.GetString("database.turso.url"),
+			AuthToken:         viper.GetString("database.turso.auth_token"),
+			SyncInterval:      viper.GetDuration("database.turso.sync_interval"),
+			WriteAheadLog:     viper.GetBool("database.turso.write_ahead_log"),
+			WALAutoCheckPoint: viper.GetInt("database.turso.wal_autocheckpoint"),
 		},
 	}
 }

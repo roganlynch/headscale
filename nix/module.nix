@@ -208,6 +208,7 @@ in
                   "sqlite"
                   "sqlite3"
                   "postgres"
+                  "turso"
                 ];
                 example = "postgres";
                 default = "sqlite";
@@ -215,6 +216,7 @@ in
                   Database engine to use.
                   Please note that using Postgres is highly discouraged as it is only supported for legacy reasons.
                   All new development, testing and optimisations are done with SQLite in mind.
+                  Turso is a distributed SQLite-compatible database with optional cloud synchronization.
                 '';
               };
 
@@ -272,6 +274,68 @@ in
                   description = ''
                     A file containing the password corresponding to
                     {option}`database.user`.
+                  '';
+                };
+              };
+
+              turso = {
+                mode = lib.mkOption {
+                  type = lib.types.enum [ "local" "embedded-replica" "remote" ];
+                  default = "local";
+                  example = "embedded-replica";
+                  description = ''
+                    Turso database mode:
+                    - local: Local SQLite file only (no cloud sync)
+                    - embedded-replica: Local file with automatic cloud synchronization
+                    - remote: Remote-only connection to Turso Cloud
+                  '';
+                };
+
+                path = lib.mkOption {
+                  type = lib.types.nullOr lib.types.str;
+                  default = "${dataDir}/db.turso";
+                  description = "Path to the Turso database file (for local and embedded-replica modes).";
+                };
+
+                url = lib.mkOption {
+                  type = lib.types.nullOr lib.types.str;
+                  default = null;
+                  example = "libsql://my-db.turso.io";
+                  description = "Turso database URL (required for embedded-replica and remote modes).";
+                };
+
+                auth_token = lib.mkOption {
+                  type = lib.types.nullOr lib.types.str;
+                  default = null;
+                  description = ''
+                    Turso authentication token (required for embedded-replica and remote modes).
+                    For production use, consider using a file-based secret instead.
+                  '';
+                };
+
+                sync_interval = lib.mkOption {
+                  type = lib.types.str;
+                  default = "5m";
+                  example = "1m";
+                  description = ''
+                    Sync interval for embedded-replica mode.
+                    Format: duration string (e.g., "5m", "1h", "30s").
+                  '';
+                };
+
+                write_ahead_log = lib.mkOption {
+                  type = lib.types.bool;
+                  default = true;
+                  description = ''
+                    Enable WAL mode for Turso. This is recommended for production environments.
+                  '';
+                };
+
+                wal_autocheckpoint = lib.mkOption {
+                  type = lib.types.int;
+                  default = 1000;
+                  description = ''
+                    WAL autocheckpoint threshold (number of pages).
                   '';
                 };
               };
