@@ -39,6 +39,7 @@ require (
 	github.com/tailscale/squibble v0.0.0-20251030164342-4d5df9caa993
 	github.com/tailscale/tailsql v0.0.0-20250421235516-02f85f087b97
 	github.com/tcnksm/go-latest v0.0.0-20170313132115-e3007ae9052e
+	github.com/tursodatabase/go-libsql v0.0.0-20251025125656-00da49cd4a6e
 	go4.org/netipx v0.0.0-20231129151722-fdeea329fbba
 	golang.org/x/crypto v0.43.0
 	golang.org/x/exp v0.0.0-20251009144603-d2f985daa21b
@@ -92,6 +93,7 @@ require (
 	github.com/Nvveen/Gotty v0.0.0-20120604004816-cd527374f1e5 // indirect
 	github.com/akutz/memconn v0.1.0 // indirect
 	github.com/alexbrainman/sspi v0.0.0-20231016080023-1a75b4708caa // indirect
+	github.com/antlr4-go/antlr/v4 v4.13.0 // indirect
 	github.com/aws/aws-sdk-go-v2 v1.36.0 // indirect
 	github.com/aws/aws-sdk-go-v2/config v1.29.5 // indirect
 	github.com/aws/aws-sdk-go-v2/credentials v1.17.58 // indirect
@@ -163,6 +165,7 @@ require (
 	github.com/kr/pretty v0.3.1 // indirect
 	github.com/kr/text v0.2.0 // indirect
 	github.com/lib/pq v1.10.9 // indirect
+	github.com/libsql/sqlite-antlr4-parser v0.0.0-20240327125255-dbf53b6cbf06 // indirect
 	github.com/lithammer/fuzzysearch v1.1.8 // indirect
 	github.com/mattn/go-colorable v0.1.14 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
