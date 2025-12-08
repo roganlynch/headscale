@@ -104,3 +104,91 @@ CREATE TABLE policies(
   deleted_at datetime
 );
 CREATE INDEX idx_policies_deleted_at ON policies(deleted_at);
+
+-- Logtail tables for log collection and management
+CREATE TABLE node_logs(
+  id integer PRIMARY KEY AUTOINCREMENT,
+  collection text NOT NULL,
+  private_id text NOT NULL,
+  public_id text NOT NULL,
+  timestamp datetime NOT NULL,
+  log_data text NOT NULL,
+  size_bytes integer NOT NULL,
+  persisted numeric DEFAULT false,
+  log_tier text NOT NULL DEFAULT 'grace_period',
+
+  created_at datetime DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX idx_logs_collection_private ON node_logs(collection, private_id);
+CREATE INDEX idx_logs_public ON node_logs(public_id);
+CREATE INDEX idx_logs_timestamp ON node_logs(timestamp);
+CREATE INDEX idx_logs_persisted ON node_logs(persisted);
+CREATE INDEX idx_logs_tier ON node_logs(log_tier);
+CREATE INDEX idx_logs_tier_timestamp ON node_logs(log_tier, timestamp);
+
+CREATE TABLE log_instances(
+  id integer PRIMARY KEY AUTOINCREMENT,
+  collection text NOT NULL,
+  private_id text UNIQUE NOT NULL,
+  public_id text UNIQUE NOT NULL,
+  persisted numeric DEFAULT false,
+  persisted_at datetime,
+  first_seen datetime NOT NULL,
+  last_seen datetime NOT NULL,
+  total_logs integer DEFAULT 0,
+  total_size_bytes integer DEFAULT 0,
+  retention_days integer,
+  log_tier text NOT NULL DEFAULT 'grace_period',
+  tier_transitioned_at datetime,
+
+  UNIQUE(collection, private_id)
+);
+CREATE INDEX idx_instances_collection ON log_instances(collection);
+CREATE INDEX idx_instances_persisted ON log_instances(persisted);
+CREATE INDEX idx_instances_tier ON log_instances(log_tier);
+
+CREATE TABLE logtail_private_id_associations(
+  private_id text PRIMARY KEY,
+  node_id integer NOT NULL,
+  collection text NOT NULL,
+  associated_at datetime NOT NULL,
+  current_ip text NOT NULL,
+  last_ip_change datetime,
+
+  CONSTRAINT fk_logtail_assoc_node FOREIGN KEY(node_id) REFERENCES nodes(id) ON DELETE CASCADE
+);
+CREATE INDEX idx_logtail_assoc_node ON logtail_private_id_associations(node_id);
+CREATE INDEX idx_logtail_assoc_collection ON logtail_private_id_associations(collection);
+
+CREATE TABLE logtail_ip_observations(
+  id integer PRIMARY KEY AUTOINCREMENT,
+  private_id text NOT NULL,
+  ip_address text NOT NULL,
+  first_seen datetime NOT NULL,
+  last_seen datetime NOT NULL,
+  observation_count integer DEFAULT 1,
+
+  created_at datetime DEFAULT CURRENT_TIMESTAMP,
+
+  CONSTRAINT fk_logtail_ip_obs_private FOREIGN KEY(private_id) REFERENCES logtail_private_id_associations(private_id) ON DELETE CASCADE
+);
+CREATE INDEX idx_logtail_ip_obs_private ON logtail_ip_observations(private_id);
+CREATE INDEX idx_logtail_ip_obs_time ON logtail_ip_observations(private_id, last_seen);
+CREATE INDEX idx_logtail_ip_obs_ip ON logtail_ip_observations(private_id, ip_address);
+CREATE INDEX idx_logtail_ip_obs_window ON logtail_ip_observations(private_id, last_seen DESC);
+
+CREATE TABLE logtail_first_seen(
+  private_id text PRIMARY KEY,
+  collection text NOT NULL,
+  first_seen_at datetime NOT NULL,
+  first_seen_ip text NOT NULL,
+  request_count integer DEFAULT 0
+);
+CREATE INDEX idx_logtail_first_seen_time ON logtail_first_seen(first_seen_at);
+
+CREATE TABLE logtail_rate_limits(
+  private_id text PRIMARY KEY,
+  request_count integer DEFAULT 0,
+  window_start datetime NOT NULL,
+  last_request datetime NOT NULL
+);

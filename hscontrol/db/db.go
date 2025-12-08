@@ -592,6 +592,177 @@ AND auth_key_id NOT IN (
 				},
 				Rollback: func(db *gorm.DB) error { return nil },
 			},
+			{
+				// Add Logtail database tables for log collection and management.
+				// This creates the foundation for the Headscale Logtail server feature.
+				ID: "202512081200-add-logtail-tables",
+				Migrate: func(tx *gorm.DB) error {
+					log.Info().Msg("Adding logtail tables to database")
+
+					// Create node_logs table
+					err := tx.Exec(`
+						CREATE TABLE IF NOT EXISTS node_logs (
+							id INTEGER PRIMARY KEY AUTOINCREMENT,
+							collection TEXT NOT NULL,
+							private_id TEXT NOT NULL,
+							public_id TEXT NOT NULL,
+							timestamp DATETIME NOT NULL,
+							log_data TEXT NOT NULL,
+							size_bytes INTEGER NOT NULL,
+							persisted NUMERIC DEFAULT false,
+							log_tier TEXT NOT NULL DEFAULT 'grace_period',
+							created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+						)
+					`).Error
+					if err != nil {
+						return fmt.Errorf("creating node_logs table: %w", err)
+					}
+
+					// Create indexes for node_logs
+					nodeLogsIndexes := []string{
+						"CREATE INDEX IF NOT EXISTS idx_logs_collection_private ON node_logs(collection, private_id)",
+						"CREATE INDEX IF NOT EXISTS idx_logs_public ON node_logs(public_id)",
+						"CREATE INDEX IF NOT EXISTS idx_logs_timestamp ON node_logs(timestamp)",
+						"CREATE INDEX IF NOT EXISTS idx_logs_persisted ON node_logs(persisted)",
+						"CREATE INDEX IF NOT EXISTS idx_logs_tier ON node_logs(log_tier)",
+						"CREATE INDEX IF NOT EXISTS idx_logs_tier_timestamp ON node_logs(log_tier, timestamp)",
+					}
+					for _, idx := range nodeLogsIndexes {
+						if err := tx.Exec(idx).Error; err != nil {
+							return fmt.Errorf("creating node_logs index: %w", err)
+						}
+					}
+
+					// Create log_instances table
+					err = tx.Exec(`
+						CREATE TABLE IF NOT EXISTS log_instances (
+							id INTEGER PRIMARY KEY AUTOINCREMENT,
+							collection TEXT NOT NULL,
+							private_id TEXT UNIQUE NOT NULL,
+							public_id TEXT UNIQUE NOT NULL,
+							persisted NUMERIC DEFAULT false,
+							persisted_at DATETIME,
+							first_seen DATETIME NOT NULL,
+							last_seen DATETIME NOT NULL,
+							total_logs INTEGER DEFAULT 0,
+							total_size_bytes INTEGER DEFAULT 0,
+							retention_days INTEGER,
+							log_tier TEXT NOT NULL DEFAULT 'grace_period',
+							tier_transitioned_at DATETIME,
+							UNIQUE(collection, private_id)
+						)
+					`).Error
+					if err != nil {
+						return fmt.Errorf("creating log_instances table: %w", err)
+					}
+
+					// Create indexes for log_instances
+					instanceIndexes := []string{
+						"CREATE INDEX IF NOT EXISTS idx_instances_collection ON log_instances(collection)",
+						"CREATE INDEX IF NOT EXISTS idx_instances_persisted ON log_instances(persisted)",
+						"CREATE INDEX IF NOT EXISTS idx_instances_tier ON log_instances(log_tier)",
+					}
+					for _, idx := range instanceIndexes {
+						if err := tx.Exec(idx).Error; err != nil {
+							return fmt.Errorf("creating log_instances index: %w", err)
+						}
+					}
+
+					// Create logtail_private_id_associations table
+					err = tx.Exec(`
+						CREATE TABLE IF NOT EXISTS logtail_private_id_associations (
+							private_id TEXT PRIMARY KEY,
+							node_id INTEGER NOT NULL,
+							collection TEXT NOT NULL,
+							associated_at DATETIME NOT NULL,
+							current_ip TEXT NOT NULL,
+							last_ip_change DATETIME,
+							CONSTRAINT fk_logtail_assoc_node FOREIGN KEY(node_id) REFERENCES nodes(id) ON DELETE CASCADE
+						)
+					`).Error
+					if err != nil {
+						return fmt.Errorf("creating logtail_private_id_associations table: %w", err)
+					}
+
+					// Create indexes for associations
+					assocIndexes := []string{
+						"CREATE INDEX IF NOT EXISTS idx_logtail_assoc_node ON logtail_private_id_associations(node_id)",
+						"CREATE INDEX IF NOT EXISTS idx_logtail_assoc_collection ON logtail_private_id_associations(collection)",
+					}
+					for _, idx := range assocIndexes {
+						if err := tx.Exec(idx).Error; err != nil {
+							return fmt.Errorf("creating logtail_private_id_associations index: %w", err)
+						}
+					}
+
+					// Create logtail_ip_observations table
+					err = tx.Exec(`
+						CREATE TABLE IF NOT EXISTS logtail_ip_observations (
+							id INTEGER PRIMARY KEY AUTOINCREMENT,
+							private_id TEXT NOT NULL,
+							ip_address TEXT NOT NULL,
+							first_seen DATETIME NOT NULL,
+							last_seen DATETIME NOT NULL,
+							observation_count INTEGER DEFAULT 1,
+							created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+							CONSTRAINT fk_logtail_ip_obs_private FOREIGN KEY(private_id) REFERENCES logtail_private_id_associations(private_id) ON DELETE CASCADE
+						)
+					`).Error
+					if err != nil {
+						return fmt.Errorf("creating logtail_ip_observations table: %w", err)
+					}
+
+					// Create indexes for IP observations
+					ipIndexes := []string{
+						"CREATE INDEX IF NOT EXISTS idx_logtail_ip_obs_private ON logtail_ip_observations(private_id)",
+						"CREATE INDEX IF NOT EXISTS idx_logtail_ip_obs_time ON logtail_ip_observations(private_id, last_seen)",
+						"CREATE INDEX IF NOT EXISTS idx_logtail_ip_obs_ip ON logtail_ip_observations(private_id, ip_address)",
+						"CREATE INDEX IF NOT EXISTS idx_logtail_ip_obs_window ON logtail_ip_observations(private_id, last_seen DESC)",
+					}
+					for _, idx := range ipIndexes {
+						if err := tx.Exec(idx).Error; err != nil {
+							return fmt.Errorf("creating logtail_ip_observations index: %w", err)
+						}
+					}
+
+					// Create logtail_first_seen table
+					err = tx.Exec(`
+						CREATE TABLE IF NOT EXISTS logtail_first_seen (
+							private_id TEXT PRIMARY KEY,
+							collection TEXT NOT NULL,
+							first_seen_at DATETIME NOT NULL,
+							first_seen_ip TEXT NOT NULL,
+							request_count INTEGER DEFAULT 0
+						)
+					`).Error
+					if err != nil {
+						return fmt.Errorf("creating logtail_first_seen table: %w", err)
+					}
+
+					// Create index for first_seen
+					err = tx.Exec("CREATE INDEX IF NOT EXISTS idx_logtail_first_seen_time ON logtail_first_seen(first_seen_at)").Error
+					if err != nil {
+						return fmt.Errorf("creating logtail_first_seen index: %w", err)
+					}
+
+					// Create logtail_rate_limits table
+					err = tx.Exec(`
+						CREATE TABLE IF NOT EXISTS logtail_rate_limits (
+							private_id TEXT PRIMARY KEY,
+							request_count INTEGER DEFAULT 0,
+							window_start DATETIME NOT NULL,
+							last_request DATETIME NOT NULL
+						)
+					`).Error
+					if err != nil {
+						return fmt.Errorf("creating logtail_rate_limits table: %w", err)
+					}
+
+					log.Info().Msg("Successfully created all logtail tables and indexes")
+					return nil
+				},
+				Rollback: func(db *gorm.DB) error { return nil },
+			},
 		},
 	)
 
