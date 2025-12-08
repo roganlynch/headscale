@@ -523,11 +523,18 @@ func (h *Headscale) createRouter(grpcMux *grpcRuntime.ServeMux) *mux.Router {
 	// Logtail endpoints (if enabled)
 	if h.logtailService != nil {
 		logtailHandler := logtail.NewHandler(h.logtailService)
+		// Write endpoints (PR6)
 		apiRouter.HandleFunc("/v1/logtail/upload", logtailHandler.UploadHandler).Methods(http.MethodPost)
 		apiRouter.HandleFunc("/v1/logtail/query", logtailHandler.QueryHandler).Methods(http.MethodGet, http.MethodPost)
 		apiRouter.HandleFunc("/v1/logtail/instance", logtailHandler.GetInstanceHandler).Methods(http.MethodGet)
 
-		log.Info().Msg("Logtail HTTP write endpoints registered")
+		// Read endpoints (PR7) - require API key authentication
+		apiRouter.HandleFunc("/logtail/collections", h.logtailService.HandleListCollections).Methods(http.MethodGet)
+		apiRouter.HandleFunc("/logtail/c/{collection}", h.logtailService.HandleQueryLogs).Methods(http.MethodGet)
+		apiRouter.HandleFunc("/logtail/c/{collection}/instances", h.logtailService.HandleGetCollectionInstances).Methods(http.MethodGet)
+		apiRouter.HandleFunc("/logtail/instances/adopt", h.logtailService.HandleAdoptInstance).Methods(http.MethodPost)
+
+		log.Info().Msg("Logtail HTTP write and read endpoints registered")
 	}
 	router.HandleFunc("/favicon.ico", FaviconHandler)
 	router.PathPrefix("/").HandlerFunc(BlankHandler)
