@@ -369,15 +369,6 @@ func (s *LogtailService) invalidateAuthCache(privateID string) {
 	s.cache.authCache.Delete(privateID)
 }
 
-// invalidateInstanceTierCache evicts instance tier cache entry
-func (s *LogtailService) invalidateInstanceTierCache(privateID string) {
-	// The tier cache uses privateID:collection as key, but we need to clear all entries
-	// for this privateID. Since sync.Map doesn't support prefix search, we rely on
-	// natural expiration. The auth cache invalidation is the critical one.
-	// For now, this is a no-op as the tier is embedded in instance metadata.
-	log.Debug().Str("private_id", privateID).Msg("Instance tier cache invalidation requested")
-}
-
 // Response types
 type CollectionsResponse struct {
 	Collections []string `json:"collections"`
