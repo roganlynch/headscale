@@ -409,7 +409,7 @@ func TestFirstSeenTracking(t *testing.T) {
 
 		retrieved, err := storage.GetFirstSeen(ctx, "test-private-id")
 		require.NoError(t, err)
-		assert.Equal(t, 1, retrieved.RequestCount) // Started at 1, incremented to 2, but we check the initial insert value
+		assert.Equal(t, 2, retrieved.RequestCount) // RecordFirstSeen sets count to 1, incremented to 2
 	})
 
 	t.Run("delete first seen", func(t *testing.T) {

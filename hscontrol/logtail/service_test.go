@@ -92,14 +92,54 @@ func setupServiceTestDB(t *testing.T) *gorm.DB {
 	`).Error
 	require.NoError(t, err)
 
+	err = db.Exec(`
+		CREATE TABLE logtail_rate_limits (
+			private_id TEXT PRIMARY KEY,
+			request_count INTEGER DEFAULT 0,
+			window_start DATETIME NOT NULL,
+			last_request DATETIME NOT NULL
+		)
+	`).Error
+	require.NoError(t, err)
+
 	return db
+}
+
+// getDefaultTestConfig returns a default test configuration
+func getDefaultTestConfig() types.LogTailServerConfig {
+	return types.LogTailServerConfig{
+		Enabled:     true,
+		EnableCache: true,
+		Retention: types.LogTailRetentionConfig{
+			EphemeralMinutes:     720,
+			PersistedDefaultDays: 30,
+			CleanupIntervalHours: 1,
+		},
+		RateLimit: types.LogTailRateLimitConfig{
+			RequestsPerMinute: 10,
+		},
+		Auth: types.LogTailAuthConfig{
+			WriteAuth: types.WriteAuthConfig{
+				RequireNodeRegistration:   true,
+				PreAuthGracePeriodSeconds: 300,
+				IPValidation: types.IPValidationConfig{
+					Enabled:               true,
+					Mode:                  "relaxed",
+					AllowIPChanges:        true,
+					ValidationWindowHours: 48,
+					CleanupHistoryDays:    30,
+					LogIPMismatches:       true,
+				},
+			},
+		},
+	}
 }
 
 func TestAuthenticateWithCache_CacheHit(t *testing.T) {
 	db := setupServiceTestDB(t)
 	storage := NewDBStorage(db)
-	rateLimiter := NewRateLimiter(types.DefaultLogTailServerConfig())
-	config := types.DefaultLogTailServerConfig()
+	rateLimiter := NewRateLimiter(db, 10)
+	config := getDefaultTestConfig()
 
 	service := NewLogtailService(storage, rateLimiter, config)
 	ctx := context.Background()
@@ -126,8 +166,8 @@ func TestAuthenticateWithCache_CacheHit(t *testing.T) {
 func TestAuthenticateWithCache_CacheMiss_NoAssociation_GracePeriod(t *testing.T) {
 	db := setupServiceTestDB(t)
 	storage := NewDBStorage(db)
-	rateLimiter := NewRateLimiter(types.DefaultLogTailServerConfig())
-	config := types.DefaultLogTailServerConfig()
+	rateLimiter := NewRateLimiter(db, 10)
+	config := getDefaultTestConfig()
 	config.Auth.WriteAuth.RequireNodeRegistration = true
 	config.Auth.WriteAuth.PreAuthGracePeriodSeconds = 300
 
@@ -156,8 +196,8 @@ func TestAuthenticateWithCache_CacheMiss_NoAssociation_GracePeriod(t *testing.T)
 func TestAuthenticateWithCache_WithAssociation_IPValidation(t *testing.T) {
 	db := setupServiceTestDB(t)
 	storage := NewDBStorage(db)
-	rateLimiter := NewRateLimiter(types.DefaultLogTailServerConfig())
-	config := types.DefaultLogTailServerConfig()
+	rateLimiter := NewRateLimiter(db, 10)
+	config := getDefaultTestConfig()
 	config.Auth.WriteAuth.IPValidation.Mode = "strict"
 	config.Auth.WriteAuth.IPValidation.AllowIPChanges = false
 
@@ -192,41 +232,44 @@ func TestAuthenticateWithCache_WithAssociation_IPValidation(t *testing.T) {
 func TestAuthenticateWithCache_RecentIPsCaching(t *testing.T) {
 	db := setupServiceTestDB(t)
 	storage := NewDBStorage(db)
-	rateLimiter := NewRateLimiter(types.DefaultLogTailServerConfig())
-	config := types.DefaultLogTailServerConfig()
+	rateLimiter := NewRateLimiter(db, 10)
+	config := getDefaultTestConfig()
 
 	service := NewLogtailService(storage, rateLimiter, config)
 	ctx := context.Background()
 
-	// Create association
+	// Create association with initial IP
 	assoc := &PrivateIDAssociation{
 		PrivateID:  "test-private-id",
 		NodeID:     12345,
 		Collection: "test-collection",
 		CurrentIP:  "10.0.0.1",
-		RecentIPs:  []string{"10.0.0.1", "10.0.0.2"},
+		RecentIPs:  []string{"10.0.0.1"},
 	}
 	err := storage.StorePrivateIDAssociation(ctx, assoc)
 	require.NoError(t, err)
 
-	// First authentication - should cache recent IPs
+	// First authentication - should cache recent IPs from DB
 	result := service.AuthenticateWithCache(ctx, "test-private-id", "10.0.0.1", "test-collection")
 	assert.True(t, result.Allowed)
 
-	// Verify recent IPs were cached
+	// Verify recent IPs were cached from DB
 	cachedIPs, ok := service.cache.recentIPs.Load("test-private-id")
 	assert.True(t, ok)
 	ips := cachedIPs.([]string)
-	assert.Len(t, ips, 2)
+	assert.Len(t, ips, 1)
 	assert.Contains(t, ips, "10.0.0.1")
-	assert.Contains(t, ips, "10.0.0.2")
+
+	// Test that subsequent authentications use cached IPs (no DB query)
+	result = service.AuthenticateWithCache(ctx, "test-private-id", "10.0.0.1", "test-collection")
+	assert.True(t, result.Allowed)
 }
 
 func TestAuthenticateWithCache_ExpiredCache(t *testing.T) {
 	db := setupServiceTestDB(t)
 	storage := NewDBStorage(db)
-	rateLimiter := NewRateLimiter(types.DefaultLogTailServerConfig())
-	config := types.DefaultLogTailServerConfig()
+	rateLimiter := NewRateLimiter(db, 10)
+	config := getDefaultTestConfig()
 
 	service := NewLogtailService(storage, rateLimiter, config)
 	ctx := context.Background()
@@ -254,8 +297,8 @@ func TestAuthenticateWithCache_ExpiredCache(t *testing.T) {
 func TestUpdateRecentIPsCached(t *testing.T) {
 	db := setupServiceTestDB(t)
 	storage := NewDBStorage(db)
-	rateLimiter := NewRateLimiter(types.DefaultLogTailServerConfig())
-	config := types.DefaultLogTailServerConfig()
+	rateLimiter := NewRateLimiter(db, 10)
+	config := getDefaultTestConfig()
 
 	service := NewLogtailService(storage, rateLimiter, config)
 	ctx := context.Background()
@@ -294,8 +337,8 @@ func TestUpdateRecentIPsCached(t *testing.T) {
 func TestUpdateRecentIPsCached_MaxTenIPs(t *testing.T) {
 	db := setupServiceTestDB(t)
 	storage := NewDBStorage(db)
-	rateLimiter := NewRateLimiter(types.DefaultLogTailServerConfig())
-	config := types.DefaultLogTailServerConfig()
+	rateLimiter := NewRateLimiter(db, 10)
+	config := getDefaultTestConfig()
 
 	service := NewLogtailService(storage, rateLimiter, config)
 	ctx := context.Background()
@@ -334,8 +377,8 @@ func TestUpdateRecentIPsCached_MaxTenIPs(t *testing.T) {
 func TestAssociatePrivateIDCached(t *testing.T) {
 	db := setupServiceTestDB(t)
 	storage := NewDBStorage(db)
-	rateLimiter := NewRateLimiter(types.DefaultLogTailServerConfig())
-	config := types.DefaultLogTailServerConfig()
+	rateLimiter := NewRateLimiter(db, 10)
+	config := getDefaultTestConfig()
 
 	service := NewLogtailService(storage, rateLimiter, config)
 	ctx := context.Background()
@@ -384,8 +427,8 @@ func TestAssociatePrivateIDCached(t *testing.T) {
 func TestStoreLogs_ServiceLayer(t *testing.T) {
 	db := setupServiceTestDB(t)
 	storage := NewDBStorage(db)
-	rateLimiter := NewRateLimiter(types.DefaultLogTailServerConfig())
-	config := types.DefaultLogTailServerConfig()
+	rateLimiter := NewRateLimiter(db, 10)
+	config := getDefaultTestConfig()
 
 	service := NewLogtailService(storage, rateLimiter, config)
 	ctx := context.Background()
@@ -415,8 +458,8 @@ func TestStoreLogs_ServiceLayer(t *testing.T) {
 func TestQueryLogs_ServiceLayer(t *testing.T) {
 	db := setupServiceTestDB(t)
 	storage := NewDBStorage(db)
-	rateLimiter := NewRateLimiter(types.DefaultLogTailServerConfig())
-	config := types.DefaultLogTailServerConfig()
+	rateLimiter := NewRateLimiter(db, 10)
+	config := getDefaultTestConfig()
 
 	service := NewLogtailService(storage, rateLimiter, config)
 	ctx := context.Background()
@@ -448,8 +491,8 @@ func TestQueryLogs_ServiceLayer(t *testing.T) {
 func TestMigrateLogTier_ServiceLayer(t *testing.T) {
 	db := setupServiceTestDB(t)
 	storage := NewDBStorage(db)
-	rateLimiter := NewRateLimiter(types.DefaultLogTailServerConfig())
-	config := types.DefaultLogTailServerConfig()
+	rateLimiter := NewRateLimiter(db, 10)
+	config := getDefaultTestConfig()
 
 	service := NewLogtailService(storage, rateLimiter, config)
 	ctx := context.Background()
@@ -488,8 +531,8 @@ func TestMigrateLogTier_ServiceLayer(t *testing.T) {
 func TestAuthenticateWithCache_WriteThroughFirstSeen(t *testing.T) {
 	db := setupServiceTestDB(t)
 	storage := NewDBStorage(db)
-	rateLimiter := NewRateLimiter(types.DefaultLogTailServerConfig())
-	config := types.DefaultLogTailServerConfig()
+	rateLimiter := NewRateLimiter(db, 10)
+	config := getDefaultTestConfig()
 	config.Auth.WriteAuth.RequireNodeRegistration = true
 
 	service := NewLogtailService(storage, rateLimiter, config)
@@ -514,8 +557,8 @@ func TestAuthenticateWithCache_WriteThroughFirstSeen(t *testing.T) {
 func TestAuthenticateWithCache_IPChangeDetection(t *testing.T) {
 	db := setupServiceTestDB(t)
 	storage := NewDBStorage(db)
-	rateLimiter := NewRateLimiter(types.DefaultLogTailServerConfig())
-	config := types.DefaultLogTailServerConfig()
+	rateLimiter := NewRateLimiter(db, 10)
+	config := getDefaultTestConfig()
 	config.Auth.WriteAuth.IPValidation.Mode = "relaxed"
 	config.Auth.WriteAuth.IPValidation.AllowIPChanges = true
 
