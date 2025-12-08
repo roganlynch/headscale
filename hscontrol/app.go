@@ -28,6 +28,7 @@ import (
 	"github.com/juanfont/headscale/hscontrol/derp"
 	derpServer "github.com/juanfont/headscale/hscontrol/derp/server"
 	"github.com/juanfont/headscale/hscontrol/dns"
+	"github.com/juanfont/headscale/hscontrol/logtail"
 	"github.com/juanfont/headscale/hscontrol/mapper"
 	"github.com/juanfont/headscale/hscontrol/state"
 	"github.com/juanfont/headscale/hscontrol/types"
@@ -94,6 +95,9 @@ type Headscale struct {
 	ephemeralGC     *db.EphemeralGarbageCollector
 
 	DERPServer *derpServer.DERPServer
+
+	// Logtail server for log ingestion
+	logtailService *logtail.LogtailService
 
 	// Things that generate changes
 	extraRecordMan *dns.ExtraRecordsMan
@@ -234,7 +238,46 @@ func NewHeadscale(cfg *types.Config) (*Headscale, error) {
 		app.DERPServer = embeddedDERPServer
 	}
 
+	// Initialize logtail server if enabled
+	if cfg.LogTail.Server.Enabled {
+		err = app.initializeLogtailServer()
+		if err != nil {
+			return nil, fmt.Errorf("failed to initialize logtail server: %w", err)
+		}
+	}
+
 	return &app, nil
+}
+
+// initializeLogtailServer initializes the logtail service for log ingestion
+func (h *Headscale) initializeLogtailServer() error {
+	if !h.cfg.LogTail.Server.Enabled {
+		return nil
+	}
+
+	log.Info().Msg("Initializing logtail server")
+
+	// Get the gorm DB from state
+	gormDB := h.state.DB().DB
+
+	// Create storage layer
+	storage := logtail.NewDBStorage(gormDB)
+
+	// Create rate limiter
+	rateLimiter := logtail.NewRateLimiter(
+		gormDB,
+		h.cfg.LogTail.Server.RateLimit.RequestsPerMinute,
+	)
+
+	// Create logtail service
+	h.logtailService = logtail.NewLogtailService(
+		storage,
+		rateLimiter,
+		h.cfg.LogTail.Server,
+	)
+
+	log.Info().Msg("Logtail server initialized successfully")
+	return nil
 }
 
 // Redirect to our TLS url.
@@ -476,6 +519,16 @@ func (h *Headscale) createRouter(grpcMux *grpcRuntime.ServeMux) *mux.Router {
 	apiRouter := router.PathPrefix("/api").Subrouter()
 	apiRouter.Use(h.httpAuthenticationMiddleware)
 	apiRouter.PathPrefix("/v1/").HandlerFunc(grpcMux.ServeHTTP)
+
+	// Logtail endpoints (if enabled)
+	if h.logtailService != nil {
+		logtailHandler := logtail.NewHandler(h.logtailService)
+		apiRouter.HandleFunc("/v1/logtail/upload", logtailHandler.UploadHandler).Methods(http.MethodPost)
+		apiRouter.HandleFunc("/v1/logtail/query", logtailHandler.QueryHandler).Methods(http.MethodGet, http.MethodPost)
+		apiRouter.HandleFunc("/v1/logtail/instance", logtailHandler.GetInstanceHandler).Methods(http.MethodGet)
+
+		log.Info().Msg("Logtail HTTP write endpoints registered")
+	}
 	router.HandleFunc("/favicon.ico", FaviconHandler)
 	router.PathPrefix("/").HandlerFunc(BlankHandler)
 
