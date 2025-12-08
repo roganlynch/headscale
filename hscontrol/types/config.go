@@ -207,8 +207,93 @@ type DERPConfig struct {
 	IPv6                               string
 }
 
+// LogTailConfig defines the logtail logging configuration
 type LogTailConfig struct {
-	Enabled bool
+	// Enabled controls whether to forward logs to logtail service
+	// DEPRECATED: Client-side forwarding. Use Server.Enabled instead.
+	Enabled bool `yaml:"enabled" mapstructure:"enabled"`
+
+	// Server configuration for built-in logtail server
+	Server LogTailServerConfig `yaml:"server" mapstructure:"server"`
+}
+
+// LogTailServerConfig defines the built-in logtail server configuration
+type LogTailServerConfig struct {
+	// Enabled controls whether the built-in logtail server is enabled
+	Enabled bool `yaml:"enabled" mapstructure:"enabled"`
+
+	// EnableCache controls whether in-memory caching is enabled
+	// When disabled, all operations go directly to the database
+	// Useful for troubleshooting, establishing performance baselines, or emergency rollback
+	// Default: true (caching enabled for optimal performance)
+	EnableCache bool `yaml:"enable_cache" mapstructure:"enable_cache"`
+
+	// Retention policies for log storage
+	Retention LogTailRetentionConfig `yaml:"retention" mapstructure:"retention"`
+
+	// Rate limiting configuration
+	RateLimit LogTailRateLimitConfig `yaml:"rate_limit" mapstructure:"rate_limit"`
+
+	// Authentication configuration
+	Auth LogTailAuthConfig `yaml:"auth" mapstructure:"auth"`
+}
+
+// LogTailRetentionConfig defines retention policies for logs
+type LogTailRetentionConfig struct {
+	// EphemeralMinutes defines how long to keep ephemeral logs (minutes)
+	// Ephemeral logs are from authenticated clients that were never explicitly persisted
+	EphemeralMinutes int `yaml:"ephemeral_minutes" mapstructure:"ephemeral_minutes"`
+
+	// PersistedDefaultDays defines default retention for persisted logs (days)
+	PersistedDefaultDays int `yaml:"persisted_default_days" mapstructure:"persisted_default_days"`
+
+	// CleanupIntervalHours defines how often cleanup runs (hours)
+	CleanupIntervalHours int `yaml:"cleanup_interval_hours" mapstructure:"cleanup_interval_hours"`
+}
+
+// LogTailRateLimitConfig defines rate limiting configuration
+type LogTailRateLimitConfig struct {
+	// RequestsPerMinute defines the maximum requests per minute per private ID
+	RequestsPerMinute int `yaml:"requests_per_minute" mapstructure:"requests_per_minute"`
+}
+
+// LogTailAuthConfig defines authentication configuration
+type LogTailAuthConfig struct {
+	// WriteAuth configuration for write operations
+	WriteAuth WriteAuthConfig `yaml:"write_auth" mapstructure:"write_auth"`
+}
+
+// WriteAuthConfig defines write authentication configuration
+type WriteAuthConfig struct {
+	// RequireNodeRegistration requires eventual association with registered node
+	RequireNodeRegistration bool `yaml:"require_node_registration" mapstructure:"require_node_registration"`
+
+	// PreAuthGracePeriodSeconds defines grace period before requiring registration (seconds)
+	PreAuthGracePeriodSeconds int `yaml:"pre_auth_grace_period_seconds" mapstructure:"pre_auth_grace_period_seconds"`
+
+	// IPValidation configuration for IP address validation
+	IPValidation IPValidationConfig `yaml:"ip_validation" mapstructure:"ip_validation"`
+}
+
+// IPValidationConfig defines IP address validation configuration
+type IPValidationConfig struct {
+	// Enabled controls whether IP validation is performed
+	Enabled bool `yaml:"enabled" mapstructure:"enabled"`
+
+	// Mode defines the IP matching mode: "strict", "relaxed", "none"
+	Mode string `yaml:"mode" mapstructure:"mode"`
+
+	// AllowIPChanges allows IP changes for the same node (mobile clients)
+	AllowIPChanges bool `yaml:"allow_ip_changes" mapstructure:"allow_ip_changes"`
+
+	// ValidationWindowHours defines the time window for accepting recent IPs (hours)
+	ValidationWindowHours int `yaml:"validation_window_hours" mapstructure:"validation_window_hours"`
+
+	// CleanupHistoryDays defines how long to keep IP observation history (days)
+	CleanupHistoryDays int `yaml:"cleanup_history_days" mapstructure:"cleanup_history_days"`
+
+	// LogIPMismatches logs warnings for IP mismatches even if allowed
+	LogIPMismatches bool `yaml:"log_ip_mismatches" mapstructure:"log_ip_mismatches"`
 }
 
 type CLIConfig struct {
@@ -381,6 +466,20 @@ func LoadConfig(path string, isFile bool) error {
 	viper.SetDefault("oidc.pkce.method", "S256")
 
 	viper.SetDefault("logtail.enabled", false)
+	viper.SetDefault("logtail.server.enabled", false)
+	viper.SetDefault("logtail.server.enable_cache", true)
+	viper.SetDefault("logtail.server.retention.ephemeral_minutes", 720) // 12 hours
+	viper.SetDefault("logtail.server.retention.persisted_default_days", 30)
+	viper.SetDefault("logtail.server.retention.cleanup_interval_hours", 1)
+	viper.SetDefault("logtail.server.rate_limit.requests_per_minute", 10)
+	viper.SetDefault("logtail.server.auth.write_auth.require_node_registration", true)
+	viper.SetDefault("logtail.server.auth.write_auth.pre_auth_grace_period_seconds", 300) // 5 minutes
+	viper.SetDefault("logtail.server.auth.write_auth.ip_validation.enabled", true)
+	viper.SetDefault("logtail.server.auth.write_auth.ip_validation.mode", "relaxed")
+	viper.SetDefault("logtail.server.auth.write_auth.ip_validation.allow_ip_changes", true)
+	viper.SetDefault("logtail.server.auth.write_auth.ip_validation.validation_window_hours", 48)
+	viper.SetDefault("logtail.server.auth.write_auth.ip_validation.cleanup_history_days", 30)
+	viper.SetDefault("logtail.server.auth.write_auth.ip_validation.log_ip_mismatches", true)
 	viper.SetDefault("randomize_client_port", false)
 
 	viper.SetDefault("ephemeral_node_inactivity_timeout", "120s")
@@ -599,9 +698,37 @@ func derpConfig() DERPConfig {
 
 func logtailConfig() LogTailConfig {
 	enabled := viper.GetBool("logtail.enabled")
+	serverEnabled := viper.GetBool("logtail.server.enabled")
+	enableCache := viper.GetBool("logtail.server.enable_cache")
 
 	return LogTailConfig{
 		Enabled: enabled,
+		Server: LogTailServerConfig{
+			Enabled:     serverEnabled,
+			EnableCache: enableCache,
+			Retention: LogTailRetentionConfig{
+				EphemeralMinutes:     viper.GetInt("logtail.server.retention.ephemeral_minutes"),
+				PersistedDefaultDays: viper.GetInt("logtail.server.retention.persisted_default_days"),
+				CleanupIntervalHours: viper.GetInt("logtail.server.retention.cleanup_interval_hours"),
+			},
+			RateLimit: LogTailRateLimitConfig{
+				RequestsPerMinute: viper.GetInt("logtail.server.rate_limit.requests_per_minute"),
+			},
+			Auth: LogTailAuthConfig{
+				WriteAuth: WriteAuthConfig{
+					RequireNodeRegistration:   viper.GetBool("logtail.server.auth.write_auth.require_node_registration"),
+					PreAuthGracePeriodSeconds: viper.GetInt("logtail.server.auth.write_auth.pre_auth_grace_period_seconds"),
+					IPValidation: IPValidationConfig{
+						Enabled:               viper.GetBool("logtail.server.auth.write_auth.ip_validation.enabled"),
+						Mode:                  viper.GetString("logtail.server.auth.write_auth.ip_validation.mode"),
+						AllowIPChanges:        viper.GetBool("logtail.server.auth.write_auth.ip_validation.allow_ip_changes"),
+						ValidationWindowHours: viper.GetInt("logtail.server.auth.write_auth.ip_validation.validation_window_hours"),
+						CleanupHistoryDays:    viper.GetInt("logtail.server.auth.write_auth.ip_validation.cleanup_history_days"),
+						LogIPMismatches:       viper.GetBool("logtail.server.auth.write_auth.ip_validation.log_ip_mismatches"),
+					},
+				},
+			},
+		},
 	}
 }
 
