@@ -1,0 +1,269 @@
+stages:
+  - dispatch
+  - build
+  - package
+  - verify
+  - publish
+
+# GitLab CE has no pull-mirror feature at all (Premium/Ultimate only), so
+# `main` here is kept in sync with github.com/juanfont/headscale by a plain
+# `git fetch upstream && git push gitlab main --tags` run manually from a
+# local clone -- there is no live GitLab-side mirror to trigger off of.
+#
+# A schedule (Settings > CI/CD > Schedules, "*/15 * * * *" against `main`)
+# drives this job instead, which looks for tags with NO pipeline at all yet
+# and triggers one each -- catching tags that arrived via that manual push
+# rather than a `git push --tags` to a ref GitLab itself watches for CI.
+#
+# Deliberately "no pipeline of any status" rather than "no *successful*
+# pipeline": checking for success only would re-trigger a fresh pipeline for
+# every still-failing tag on every single schedule tick forever, compounding
+# every 15 minutes. If a triggered pipeline fails, fix the cause and re-run it
+# manually (or delete it) rather than relying on this job to retry it.
+dispatch:
+  stage: dispatch
+  image: alpine:3.20
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule"'
+  before_script:
+    - apk add --no-cache curl jq
+  script:
+    - |
+      set -eu
+      API="${CI_API_V4_URL}/projects/${CI_PROJECT_ID}"
+      MAX_IN_FLIGHT=10   # circuit breaker: don't dispatch into an already-backed-up queue
+      MAX_PER_RUN=5      # throttle: cap how many *new* pipelines one tick can create
+      MAX_TAGS=3         # only ever consider the N most recent tags; older releases are never auto-built
+
+      pending=$(curl -sf --header "PRIVATE-TOKEN: ${GITLAB_API_TOKEN}" "${API}/pipelines?status=pending&per_page=100" | jq 'length')
+      running=$(curl -sf --header "PRIVATE-TOKEN: ${GITLAB_API_TOKEN}" "${API}/pipelines?status=running&per_page=100" | jq 'length')
+      in_flight=$((pending + running))
+
+      if [ "$in_flight" -ge "$MAX_IN_FLIGHT" ]; then
+        echo "Circuit breaker tripped: ${in_flight} pipelines already pending/running (limit ${MAX_IN_FLIGHT})."
+        echo "Something is stuck (dead runner, stuck job, or a dispatch bug) -- not enqueuing more. Investigate the backlog before it clears on its own."
+        exit 1
+      fi
+
+      # tags API defaults to order_by=updated&sort=desc, i.e. newest first; pin it explicitly and cap to MAX_TAGS
+      tags=$(curl -sf --header "PRIVATE-TOKEN: ${GITLAB_API_TOKEN}" "${API}/repository/tags?order_by=updated&sort=desc&per_page=${MAX_TAGS}" | jq -r '.[].name')
+      triggered=0
+      for tag in $tags; do
+        if [ "$triggered" -ge "$MAX_PER_RUN" ]; then
+          echo "Hit MAX_PER_RUN (${MAX_PER_RUN}) for this tick, remaining unbuilt tags will be picked up next run"
+          break
+        fi
+        built=$(curl -sf --header "PRIVATE-TOKEN: ${GITLAB_API_TOKEN}" "${API}/pipelines?ref=${tag}&per_page=1" | jq 'length')
+        if [ "$built" -eq 0 ]; then
+          echo "No pipeline for ${tag} yet, triggering one"
+          curl -sf --request POST --header "PRIVATE-TOKEN: ${GITLAB_API_TOKEN}" "${API}/pipeline?ref=${tag}" >/dev/null
+          triggered=$((triggered + 1))
+        fi
+      done
+
+# Plain `go build` matching the Makefile's own ldflags (`-X main.version=...`)
+# rather than pulling in goreleaser -- this pipeline only needs one
+# linux/amd64 binary for the deb, not goreleaser's full cross-platform
+# archive/docker/ko matrix.
+#
+# Two tag formats both build here:
+#   v1.2.3             -- upstream release, tagged on `main` (pushed manually,
+#                         see the dispatch comment above)
+#   internal-v1.2.3-N  -- our own patched build, tagged on `internal` and
+#                         pushed directly by us, so it gets a normal
+#                         push-triggered pipeline -- no dispatch workaround
+#                         needed, that's only for tags synced in from upstream
+build:
+  stage: build
+  image: golang:1.26
+  rules:
+    - if: '$CI_COMMIT_TAG =~ /^(v|internal-v)/'
+  script:
+    - mkdir -p .build
+    - CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath
+        -ldflags="-s -w -X main.version=${CI_COMMIT_TAG}"
+        -o .build/headscale ./cmd/headscale
+  artifacts:
+    paths:
+      - .build/headscale
+    expire_in: 1 hour
+
+# Tag checkouts are the pristine upstream mirror (or, for internal-v tags,
+# whatever's on `internal` at that point) -- nfpm.yaml only exists on
+# ci-config, so pull just that in without touching the rest. Unlike
+# nebula-sync, the packaging/ assets themselves (systemd unit, deb
+# maintainer scripts) already ship in the headscale tree on every tag, so
+# there's nothing else to pull in here.
+package:
+  stage: package
+  image: golang:1.26
+  needs: ["build"]
+  rules:
+    - if: '$CI_COMMIT_TAG =~ /^(v|internal-v)/'
+  variables:
+    NFPM_VERSION: "2.39.0"
+  cache:
+    key: "nfpm-${NFPM_VERSION}"
+    paths:
+      - .nfpm-cache/
+  before_script:
+    - |
+      mkdir -p .nfpm-cache
+      if [ ! -x .nfpm-cache/nfpm ]; then
+        echo "nfpm ${NFPM_VERSION} not cached, downloading"
+        curl -sSL "https://github.com/goreleaser/nfpm/releases/download/v${NFPM_VERSION}/nfpm_${NFPM_VERSION}_Linux_x86_64.tar.gz" | tar -xz -C .nfpm-cache nfpm
+      else
+        echo "using cached nfpm ${NFPM_VERSION}"
+      fi
+    - export PATH="${PWD}/.nfpm-cache:${PATH}"
+    - git fetch origin ci-config
+    - git checkout origin/ci-config -- nfpm.yaml
+  script:
+    - |
+      set -eu
+      case "$CI_COMMIT_TAG" in
+        internal-v*)
+          export PKG_NAME=headscale-internal
+          export PKG_CONFLICTS=headscale
+          export PKG_VERSION="${CI_COMMIT_TAG#internal-v}"
+          ;;
+        v*)
+          export PKG_NAME=headscale
+          export PKG_CONFLICTS=headscale-internal
+          export PKG_VERSION="${CI_COMMIT_TAG#v}"
+          ;;
+        *)
+          echo "Unrecognized tag format: ${CI_COMMIT_TAG}" >&2
+          exit 1
+          ;;
+      esac
+      nfpm package --config nfpm.yaml --packager deb --target "${PKG_NAME}_${PKG_VERSION}_amd64.deb"
+  artifacts:
+    paths:
+      - "headscale*_amd64.deb"
+
+# Runs the just-built .deb under real systemd in a nested, privileged
+# container (needs the runner host's Docker socket mounted into job
+# containers -- see /etc/gitlab-runner/config.toml on gitlab.internal.lan).
+#
+# This does NOT prove a real tailnet comes up -- that needs real config
+# (server_url, DERP, a listener) and is covered by the integration test
+# suite instead. This proves the half that's actually package-specific:
+# the deb installs, the system user/group and unit are created correctly,
+# the service starts and stays active as User=headscale, the shipped
+# config lands at /etc/headscale/config.yaml, and removal leaves that
+# config in place (config|noreplace).
+verify:
+  stage: verify
+  image: docker:27-cli
+  needs: ["package"]
+  rules:
+    - if: '$CI_COMMIT_TAG =~ /^(v|internal-v)/'
+  variables:
+    TEST_IMAGE: "headscale-citest-base:v1"
+    DOCKER_HOST: "unix:///var/run/docker.sock"
+  before_script:
+    - git fetch origin ci-config
+    - git checkout origin/ci-config -- packaging/ci
+  script:
+    - |
+      set -eu
+      if ! docker image inspect "$TEST_IMAGE" >/dev/null 2>&1; then
+        docker build --tag "$TEST_IMAGE" -f packaging/ci/Dockerfile.systemd-test packaging/ci/
+      fi
+
+      CONTAINER="headscale-verify-${CI_JOB_ID}"
+      cleanup() { docker rm -f "$CONTAINER" >/dev/null 2>&1 || true; }
+      trap cleanup EXIT
+
+      docker run -d --name "$CONTAINER" --privileged --cgroupns=host \
+        -e container=docker \
+        --tmpfs /run --tmpfs /run/lock \
+        "$TEST_IMAGE"
+
+      DEB=$(ls headscale*_amd64.deb)
+      PKG_NAME=$(basename "$DEB" | sed -E 's/_[^_]+_amd64\.deb$//')
+
+      # Only waiting for the system bus to come up, not for is-system-running
+      # to reach "running" -- this minimal container reports "degraded" (some
+      # default unit failing, unrelated to anything under test) and never
+      # clears it, same as it would on any other bare debian:trixie base.
+      for i in $(seq 1 60); do
+        STATE=$(docker exec "$CONTAINER" systemctl is-system-running 2>&1) || true
+        case "$STATE" in
+          *"Failed to connect"*) echo "waiting for systemd bus ($i/60): $STATE"; sleep 1; continue ;;
+        esac
+        echo "systemd bus ready: $STATE"
+        break
+      done
+
+      docker cp "$DEB" "$CONTAINER:/root/$DEB"
+      docker exec "$CONTAINER" dpkg -i "/root/$DEB"
+
+      docker exec -e PKG_NAME="$PKG_NAME" "$CONTAINER" bash -eu -c '
+        check() { echo "-- check: $1"; }
+
+        check "headscale system user was created"
+        getent passwd headscale
+
+        check "package-shipped config was installed"
+        [ -f /etc/headscale/config.yaml ]
+
+        systemctl daemon-reload
+        systemctl enable --now headscale.service
+        sleep 2
+        systemctl status headscale.service --no-pager || true
+
+        check "User=headscale"
+        ACTUAL_USER=$(systemctl show headscale.service -p User --value)
+        echo "got: [$ACTUAL_USER]"
+        [ "$ACTUAL_USER" = "headscale" ]
+
+        check "unit reaches active"
+        ACTIVE_STATE=unknown
+        for i in $(seq 1 20); do
+          ACTIVE_STATE=$(systemctl show headscale.service -p ActiveState --value)
+          [ "$ACTIVE_STATE" = "active" ] && break
+          echo "waiting for active ($i/20): $ACTIVE_STATE"
+          sleep 1
+        done
+        echo "got ActiveState=[$ACTIVE_STATE]"
+        [ "$ACTIVE_STATE" = "active" ]
+
+        check "binary runs"
+        headscale version
+
+        check "remove leaves shipped config in place (config|noreplace)"
+        dpkg -r "$PKG_NAME"
+        [ -f /etc/headscale/config.yaml ]
+
+        echo "verify: all checks passed"
+      '
+
+# Publishes into the SAME shared repo.internal.lan / pkgs.internal.lan apt
+# pool that nebula-sync and chrony-exporter use, via the same nebula-deploy
+# account/key -- reused rather than provisioning a headscale-specific deploy
+# key, since it's one shared pool for multiple packages.
+publish:
+  stage: publish
+  image: alpine:3.20
+  needs: ["package", "verify"]
+  rules:
+    - if: '$CI_COMMIT_TAG =~ /^(v|internal-v)/'
+  before_script:
+    - apk add --no-cache openssh-client
+    - mkdir -p ~/.ssh && chmod 700 ~/.ssh
+    # DEPLOY_SSH_PRIVATE_KEY is a GitLab file-type variable: the env var holds
+    # a path to the key, not the key content -- copy it, don't echo it
+    - cp "$DEPLOY_SSH_PRIVATE_KEY" ~/.ssh/id_ed25519
+    - chmod 600 ~/.ssh/id_ed25519
+    - ssh-keyscan -t ed25519 -H pkgs.internal.lan >> ~/.ssh/known_hosts
+  script:
+    - |
+      set -eu
+      DEB=$(ls headscale*_amd64.deb)
+      # -O: force legacy scp protocol -- OpenSSH 9.0+ clients default to SFTP
+      # under the hood, which the forced-command wrapper on the deploy account
+      # (matching literal `scp -t <path>`) doesn't recognize without it.
+      scp -O -i ~/.ssh/id_ed25519 "$DEB" nebula-deploy@pkgs.internal.lan:pool/main/
+      ssh -i ~/.ssh/id_ed25519 nebula-deploy@pkgs.internal.lan reindex
