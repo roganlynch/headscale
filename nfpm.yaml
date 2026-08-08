@@ -1,0 +1,46 @@
+name: ${PKG_NAME}  # headscale (upstream) or headscale-internal; set by CI before packaging
+arch: amd64
+platform: linux
+version: ${PKG_VERSION}  # nfpm expands env vars in string fields; set by CI before packaging
+version_schema: none
+maintainer: Rogan Lynch <roganl@gmail.com>
+description: |
+  Open source implementation of the Tailscale control server.
+  Internal package built from a mirror of github.com/juanfont/headscale.
+homepage: https://github.com/juanfont/headscale
+license: BSD-3-Clause
+
+# Both flavors install the same binary/unit/config, so they're mutually
+# exclusive on a given host rather than co-installable side by side.
+provides:
+  - headscale
+conflicts:
+  - ${PKG_CONFLICTS}  # the other flavor's package name; set by CI before packaging
+
+contents:
+  - src: .build/headscale
+    dst: /usr/bin/headscale
+  - src: LICENSE
+    dst: /usr/share/doc/headscale/copyright
+  - src: packaging/systemd/headscale.service
+    dst: /usr/lib/systemd/system/headscale.service
+  - dst: /var/lib/headscale
+    type: dir
+  - src: config-example.yaml
+    dst: /etc/headscale/config.yaml
+    type: config|noreplace
+    file_info:
+      mode: 0644
+  - src: config-example.yaml
+    dst: /usr/share/doc/headscale/examples/config-example.yaml
+
+scripts:
+  postinstall: packaging/deb/postinst
+  postremove: packaging/deb/postrm
+  preremove: packaging/deb/prerm
+
+deb:
+  lintian_overrides:
+    - no-changelog # CHANGELOG.md uses a different formatting
+    - no-manual-page
+    - statically-linked-binary
