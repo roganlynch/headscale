@@ -5,6 +5,16 @@ stages:
   - verify
   - publish
 
+# Default "1" (live) so every normal path -- a real `git push --tags`, and the
+# dispatch job's `POST .../pipeline?ref=${tag}` -- keeps publishing exactly as
+# before without anyone having to think about this. Tag pushes themselves
+# can't carry variable overrides, so the only way to get PUBLISH_LIVE=0 is a
+# manual "Run pipeline" (UI or API) against an *existing* tag ref with the
+# variable set explicitly -- that's also why this can't default to "0": there
+# would be no push-triggered path left that ever actually publishes.
+variables:
+  PUBLISH_LIVE: "1"
+
 # GitLab CE has no pull-mirror feature at all (Premium/Ultimate only), so
 # `main` here is kept in sync with github.com/juanfont/headscale by a plain
 # `git fetch upstream && git push gitlab main --tags` run manually from a
@@ -303,16 +313,33 @@ publish:
   rules:
     - if: '$CI_COMMIT_TAG =~ /^(v|internal-v)/'
   before_script:
-    - apk add --no-cache openssh-client
-    - mkdir -p ~/.ssh && chmod 700 ~/.ssh
-    # DEPLOY_SSH_PRIVATE_KEY is a GitLab file-type variable: the env var holds
-    # a path to the key, not the key content -- copy it, don't echo it
-    - cp "$DEPLOY_SSH_PRIVATE_KEY" ~/.ssh/id_ed25519
-    - chmod 600 ~/.ssh/id_ed25519
-    - ssh-keyscan -t ed25519 -H pkgs.internal.lan >> ~/.ssh/known_hosts
+    - apk add --no-cache curl jq openssh-client
   script:
     - |
       set -eu
+      if [ "${PUBLISH_LIVE}" != "1" ]; then
+        echo "PUBLISH_LIVE=${PUBLISH_LIVE}: dry run, not touching pkgs.internal.lan."
+        echo "Purging this pipeline's package artifact instead of publishing it."
+        PKG_JOB_ID=$(curl -sf --header "PRIVATE-TOKEN: ${GITLAB_API_TOKEN}" \
+          "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/pipelines/${CI_PIPELINE_ID}/jobs?per_page=100" \
+          | jq -r '.[] | select(.name == "package") | .id')
+        if [ -n "${PKG_JOB_ID}" ]; then
+          curl -sf --request DELETE --header "PRIVATE-TOKEN: ${GITLAB_API_TOKEN}" \
+            "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/jobs/${PKG_JOB_ID}/artifacts"
+          echo "purged package job (${PKG_JOB_ID}) artifacts"
+        else
+          echo "WARNING: could not find the package job's id, nothing purged" >&2
+        fi
+        exit 0
+      fi
+
+      mkdir -p ~/.ssh && chmod 700 ~/.ssh
+      # DEPLOY_SSH_PRIVATE_KEY is a GitLab file-type variable: the env var holds
+      # a path to the key, not the key content -- copy it, don't echo it
+      cp "$DEPLOY_SSH_PRIVATE_KEY" ~/.ssh/id_ed25519
+      chmod 600 ~/.ssh/id_ed25519
+      ssh-keyscan -t ed25519 -H pkgs.internal.lan >> ~/.ssh/known_hosts
+
       DEB=$(ls headscale*_amd64.deb)
       # -O: force legacy scp protocol -- OpenSSH 9.0+ clients default to SFTP
       # under the hood, which the forced-command wrapper on the deploy account
