@@ -5,6 +5,15 @@ stages:
   - verify
   - publish
 
+# dispatch job (upstream-tag pickup + self-prune) lives here now, shared with
+# internal/chrony_exporter and internal/nebula-sync -- see that file's header
+# for why, and internal/headscale ci-config commit dea76b6b (or earlier) for
+# the last hand-copied version if you need pre-centralization history.
+include:
+  - project: 'internal/debian-baseline'
+    ref: main
+    file: 'ci-templates/dispatch.yml'
+
 # Default "1" (live) so every normal path -- a real `git push --tags`, and the
 # dispatch job's `POST .../pipeline?ref=${tag}` -- keeps publishing exactly as
 # before without anyone having to think about this. Tag pushes themselves
@@ -14,113 +23,6 @@ stages:
 # would be no push-triggered path left that ever actually publishes.
 variables:
   PUBLISH_LIVE: "1"
-
-# GitLab CE has no pull-mirror feature at all (Premium/Ultimate only), so
-# `main` here is kept in sync with github.com/juanfont/headscale by a plain
-# `git fetch upstream && git push gitlab main --tags` run manually from a
-# local clone -- there is no live GitLab-side mirror to trigger off of.
-#
-# A schedule (Settings > CI/CD > Schedules, "*/15 * * * *" against `main`)
-# drives this job instead, which looks for tags with NO pipeline at all yet
-# and triggers one each -- catching tags that arrived via that manual push
-# rather than a `git push --tags` to a ref GitLab itself watches for CI.
-#
-# Deliberately "no pipeline of any status" rather than "no *successful*
-# pipeline": checking for success only would re-trigger a fresh pipeline for
-# every still-failing tag on every single schedule tick forever, compounding
-# every 15 minutes. If a triggered pipeline fails, fix the cause and re-run it
-# manually (or delete it) rather than relying on this job to retry it.
-dispatch:
-  stage: dispatch
-  image: alpine:3.20
-  rules:
-    - if: '$CI_PIPELINE_SOURCE == "schedule"'
-  before_script:
-    - apk add --no-cache curl jq
-  script:
-    - |
-      set -eu
-      API="${CI_API_V4_URL}/projects/${CI_PROJECT_ID}"
-      MAX_IN_FLIGHT=10   # circuit breaker: don't dispatch into an already-backed-up queue
-      MAX_PER_RUN=5      # throttle: cap how many *new* pipelines one tick can create
-      MAX_TAGS=3         # only ever consider the N most recent tags; older releases are never auto-built
-
-      pending=$(curl -sf --header "PRIVATE-TOKEN: ${GITLAB_API_TOKEN}" "${API}/pipelines?status=pending&per_page=100" | jq 'length')
-      running=$(curl -sf --header "PRIVATE-TOKEN: ${GITLAB_API_TOKEN}" "${API}/pipelines?status=running&per_page=100" | jq 'length')
-      in_flight=$((pending + running))
-
-      if [ "$in_flight" -ge "$MAX_IN_FLIGHT" ]; then
-        echo "Circuit breaker tripped: ${in_flight} pipelines already pending/running (limit ${MAX_IN_FLIGHT})."
-        echo "Something is stuck (dead runner, stuck job, or a dispatch bug) -- not enqueuing more. Investigate the backlog before it clears on its own."
-        exit 1
-      fi
-
-      # tags API defaults to order_by=updated&sort=desc, i.e. newest first; pin it explicitly and cap to MAX_TAGS
-      tags=$(curl -sf --header "PRIVATE-TOKEN: ${GITLAB_API_TOKEN}" "${API}/repository/tags?order_by=updated&sort=desc&per_page=${MAX_TAGS}" | jq -r '.[].name')
-      triggered=0
-      for tag in $tags; do
-        if [ "$triggered" -ge "$MAX_PER_RUN" ]; then
-          echo "Hit MAX_PER_RUN (${MAX_PER_RUN}) for this tick, remaining unbuilt tags will be picked up next run"
-          break
-        fi
-        built=$(curl -sf --header "PRIVATE-TOKEN: ${GITLAB_API_TOKEN}" "${API}/pipelines?ref=${tag}&per_page=1" | jq 'length')
-        if [ "$built" -eq 0 ]; then
-          echo "No pipeline for ${tag} yet, triggering one"
-          curl -sf --request POST --header "PRIVATE-TOKEN: ${GITLAB_API_TOKEN}" "${API}/pipeline?ref=${tag}" >/dev/null
-          triggered=$((triggered + 1))
-        fi
-      done
-
-      # Self-prune no-op schedule pipelines older than the last ~1hr of
-      # ticks (kept as "last N", not a wall-clock cutoff -- avoids betting
-      # on this alpine image's busybox `date` supporting GNU-style relative
-      # dates). A no-op is: this job succeeded and printed none of the
-      # markers below -- didn't trigger anything, didn't hit the circuit
-      # breaker. 2026-08-27: manually pruned ~4300 accumulated no-op
-      # pipelines across the three mirrored projects before adding this;
-      # left unpruned, dispatch runs every 15min forever and the pipeline
-      # list becomes useless for finding real build/package/verify/publish
-      # runs. Deliberately isolated in a subshell with its own failure
-      # handling: a prune hiccup must never fail this job, since a failing
-      # dispatch is exactly what got this schedule auto-disabled for three
-      # weeks before this was noticed and fixed.
-      #
-      # GITLAB_API_TOKEN needs Owner -- deleting a pipeline requires it
-      # specifically (confirmed empirically: Maintainer also gets a 403,
-      # despite that being GitLab's documented answer in some places).
-      # Learned this the hard way: the first version of this token was
-      # Developer-scoped, and the DELETE call's failure was silently
-      # swallowed rather than surfaced --
-      # `curl -sf` inside a `set -eu` subshell does NOT reliably abort on a
-      # failing external command in every shell (reproduced locally: it's
-      # not just an alpine/busybox quirk, bash 5.3 does it too), so the loop
-      # kept going and printed a bogus non-zero "removed" count every tick
-      # while nothing was actually deleted. Now checked explicitly via the
-      # HTTP status code instead of trusting errexit propagation.
-      PRUNE_KEEP_RECENT=4   # ~1hr of buffer at this job's 15min cadence
-      PRUNE_MAX_PER_RUN=100
-      (
-        set -eu
-        candidates=$(curl -sf --header "PRIVATE-TOKEN: ${GITLAB_API_TOKEN}" \
-          "${API}/pipelines?source=schedule&status=success&order_by=id&sort=desc&per_page=$((PRUNE_KEEP_RECENT + PRUNE_MAX_PER_RUN))" \
-          | jq -r --argjson skip "$PRUNE_KEEP_RECENT" '.[$skip:] | .[].id')
-        pruned=0
-        failed=0
-        for pid in $candidates; do
-          job_id=$(curl -sf --header "PRIVATE-TOKEN: ${GITLAB_API_TOKEN}" "${API}/pipelines/${pid}/jobs" | jq -r '.[0].id // empty')
-          [ -z "$job_id" ] && continue
-          trace=$(curl -sf --header "PRIVATE-TOKEN: ${GITLAB_API_TOKEN}" "${API}/jobs/${job_id}/trace")
-          case "$trace" in
-            *"triggering one"*|*"Circuit breaker tripped"*|*"Hit MAX_PER_RUN"*) continue ;;
-          esac
-          status=$(curl -s -o /dev/null -w '%{http_code}' --request DELETE --header "PRIVATE-TOKEN: ${GITLAB_API_TOKEN}" "${API}/pipelines/${pid}")
-          case "$status" in
-            2??) pruned=$((pruned + 1)) ;;
-            *) failed=$((failed + 1)); echo "self-prune: DELETE ${pid} failed, HTTP ${status}" ;;
-          esac
-        done
-        echo "self-prune: removed ${pruned} no-op schedule pipeline(s), ${failed} failed"
-      ) || echo "self-prune: failed this tick, continuing (dispatch itself is unaffected)"
 
 # Plain `go build` matching the Makefile's own ldflags (`-X main.version=...`)
 # rather than pulling in goreleaser -- this pipeline only needs one
