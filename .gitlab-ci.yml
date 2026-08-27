@@ -84,6 +84,17 @@ dispatch:
       # handling: a prune hiccup must never fail this job, since a failing
       # dispatch is exactly what got this schedule auto-disabled for three
       # weeks before this was noticed and fixed.
+      #
+      # GITLAB_API_TOKEN needs Maintainer, not Developer -- deleting a
+      # pipeline requires it and Developer gets a 403. Learned this the hard
+      # way: the first version of this token was Developer-scoped, and the
+      # DELETE call's failure was silently swallowed rather than surfaced --
+      # `curl -sf` inside a `set -eu` subshell does NOT reliably abort on a
+      # failing external command in every shell (reproduced locally: it's
+      # not just an alpine/busybox quirk, bash 5.3 does it too), so the loop
+      # kept going and printed a bogus non-zero "removed" count every tick
+      # while nothing was actually deleted. Now checked explicitly via the
+      # HTTP status code instead of trusting errexit propagation.
       PRUNE_KEEP_RECENT=4   # ~1hr of buffer at this job's 15min cadence
       PRUNE_MAX_PER_RUN=100
       (
@@ -92,6 +103,7 @@ dispatch:
           "${API}/pipelines?source=schedule&status=success&order_by=id&sort=desc&per_page=$((PRUNE_KEEP_RECENT + PRUNE_MAX_PER_RUN))" \
           | jq -r --argjson skip "$PRUNE_KEEP_RECENT" '.[$skip:] | .[].id')
         pruned=0
+        failed=0
         for pid in $candidates; do
           job_id=$(curl -sf --header "PRIVATE-TOKEN: ${GITLAB_API_TOKEN}" "${API}/pipelines/${pid}/jobs" | jq -r '.[0].id // empty')
           [ -z "$job_id" ] && continue
@@ -99,10 +111,13 @@ dispatch:
           case "$trace" in
             *"triggering one"*|*"Circuit breaker tripped"*|*"Hit MAX_PER_RUN"*) continue ;;
           esac
-          curl -sf --request DELETE --header "PRIVATE-TOKEN: ${GITLAB_API_TOKEN}" "${API}/pipelines/${pid}" >/dev/null
-          pruned=$((pruned + 1))
+          status=$(curl -s -o /dev/null -w '%{http_code}' --request DELETE --header "PRIVATE-TOKEN: ${GITLAB_API_TOKEN}" "${API}/pipelines/${pid}")
+          case "$status" in
+            2??) pruned=$((pruned + 1)) ;;
+            *) failed=$((failed + 1)); echo "self-prune: DELETE ${pid} failed, HTTP ${status}" ;;
+          esac
         done
-        echo "self-prune: removed ${pruned} no-op schedule pipeline(s)"
+        echo "self-prune: removed ${pruned} no-op schedule pipeline(s), ${failed} failed"
       ) || echo "self-prune: failed this tick, continuing (dispatch itself is unaffected)"
 
 # Plain `go build` matching the Makefile's own ldflags (`-X main.version=...`)
