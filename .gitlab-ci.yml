@@ -85,10 +85,12 @@ dispatch:
       # dispatch is exactly what got this schedule auto-disabled for three
       # weeks before this was noticed and fixed.
       #
-      # GITLAB_API_TOKEN needs Maintainer, not Developer -- deleting a
-      # pipeline requires it and Developer gets a 403. Learned this the hard
-      # way: the first version of this token was Developer-scoped, and the
-      # DELETE call's failure was silently swallowed rather than surfaced --
+      # GITLAB_API_TOKEN needs Owner -- deleting a pipeline requires it
+      # specifically (confirmed empirically: Maintainer also gets a 403,
+      # despite that being GitLab's documented answer in some places).
+      # Learned this the hard way: the first version of this token was
+      # Developer-scoped, and the DELETE call's failure was silently
+      # swallowed rather than surfaced --
       # `curl -sf` inside a `set -eu` subshell does NOT reliably abort on a
       # failing external command in every shell (reproduced locally: it's
       # not just an alpine/busybox quirk, bash 5.3 does it too), so the loop
