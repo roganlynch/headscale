@@ -61,6 +61,40 @@ dispatch:
         fi
       done
 
+      # Self-prune no-op schedule pipelines older than the last ~1hr of
+      # ticks (kept as "last N", not a wall-clock cutoff -- avoids betting
+      # on this alpine image's busybox `date` supporting GNU-style relative
+      # dates). A no-op is: this job succeeded and printed none of the
+      # markers below -- didn't trigger anything, didn't hit the circuit
+      # breaker. 2026-08-27: manually pruned ~4300 accumulated no-op
+      # pipelines across the three mirrored projects before adding this;
+      # left unpruned, dispatch runs every 15min forever and the pipeline
+      # list becomes useless for finding real build/package/verify/publish
+      # runs. Deliberately isolated in a subshell with its own failure
+      # handling: a prune hiccup must never fail this job, since a failing
+      # dispatch is exactly what got this schedule auto-disabled for three
+      # weeks before this was noticed and fixed.
+      PRUNE_KEEP_RECENT=4   # ~1hr of buffer at this job's 15min cadence
+      PRUNE_MAX_PER_RUN=100
+      (
+        set -eu
+        candidates=$(curl -sf --header "PRIVATE-TOKEN: ${GITLAB_API_TOKEN}" \
+          "${API}/pipelines?source=schedule&status=success&order_by=id&sort=desc&per_page=$((PRUNE_KEEP_RECENT + PRUNE_MAX_PER_RUN))" \
+          | jq -r --argjson skip "$PRUNE_KEEP_RECENT" '.[$skip:] | .[].id')
+        pruned=0
+        for pid in $candidates; do
+          job_id=$(curl -sf --header "PRIVATE-TOKEN: ${GITLAB_API_TOKEN}" "${API}/pipelines/${pid}/jobs" | jq -r '.[0].id // empty')
+          [ -z "$job_id" ] && continue
+          trace=$(curl -sf --header "PRIVATE-TOKEN: ${GITLAB_API_TOKEN}" "${API}/jobs/${job_id}/trace")
+          case "$trace" in
+            *"triggering one"*|*"Circuit breaker tripped"*|*"Hit MAX_PER_RUN"*) continue ;;
+          esac
+          curl -sf --request DELETE --header "PRIVATE-TOKEN: ${GITLAB_API_TOKEN}" "${API}/pipelines/${pid}" >/dev/null
+          pruned=$((pruned + 1))
+        done
+        echo "self-prune: removed ${pruned} no-op schedule pipeline(s)"
+      ) || echo "self-prune: failed this tick, continuing (dispatch itself is unaffected)"
+
 # Plain `go build` matching the Makefile's own ldflags (`-X main.version=...`)
 # rather than pulling in goreleaser -- this pipeline only needs one
 # linux/amd64 binary for the deb, not goreleaser's full cross-platform
