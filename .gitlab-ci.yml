@@ -24,19 +24,6 @@ include:
 variables:
   PUBLISH_LIVE: "1"
 
-# THROWAWAY -- validates that a pipeline-run variable override actually
-# reaches a job before trusting it near the real publish job again (an
-# earlier `glab api -f ...` call silently failed to attach the override due
-# to a malformed JSON body, and the publish job ran live as a result). No
-# side effects. Remove after confirming.
-diag_publish_live:
-  stage: dispatch
-  image: alpine:3.20
-  rules:
-    - if: '$CI_PIPELINE_SOURCE == "api"'
-  script:
-    - echo "PUBLISH_LIVE=${PUBLISH_LIVE}"
-
 # Plain `go build` matching the Makefile's own ldflags (`-X main.version=...`)
 # rather than pulling in goreleaser -- this pipeline only needs one
 # linux/amd64 binary for the deb, not goreleaser's full cross-platform
