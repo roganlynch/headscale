@@ -38,9 +38,3 @@ scripts:
   postinstall: packaging/deb/postinst
   postremove: packaging/deb/postrm
   preremove: packaging/deb/prerm
-
-deb:
-  lintian_overrides:
-    - no-changelog # CHANGELOG.md uses a different formatting
-    - no-manual-page
-    - statically-linked-binary
