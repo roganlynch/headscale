@@ -241,9 +241,12 @@ verify:
       '
 
 # Publishes into the SAME shared repo.internal.lan / pkgs.internal.lan apt
-# pool that nebula-sync and chrony-exporter use, via the same nebula-deploy
-# account/key -- reused rather than provisioning a headscale-specific deploy
-# key, since it's one shared pool for multiple packages.
+# pool that nebula-sync and chrony-exporter use, but -- like every other
+# publisher on this host -- via its own dedicated headscale-deploy system
+# account and key, a member of the shared local-repo-publishers group that
+# owns pool/main/. There is no actual shared deploy account: each package
+# gets its own <pkg>-deploy user, home, forced-command wrapper script, and
+# key; only the destination pool/index is shared.
 publish:
   stage: publish
   image: alpine:3.20
@@ -265,5 +268,5 @@ publish:
       # -O: force legacy scp protocol -- OpenSSH 9.0+ clients default to SFTP
       # under the hood, which the forced-command wrapper on the deploy account
       # (matching literal `scp -t <path>`) doesn't recognize without it.
-      scp -O -i ~/.ssh/id_ed25519 "$DEB" nebula-deploy@pkgs.internal.lan:pool/main/
-      ssh -i ~/.ssh/id_ed25519 nebula-deploy@pkgs.internal.lan reindex
+      scp -O -i ~/.ssh/id_ed25519 "$DEB" headscale-deploy@pkgs.internal.lan:pool/main/
+      ssh -i ~/.ssh/id_ed25519 headscale-deploy@pkgs.internal.lan reindex
