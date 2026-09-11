@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"time"
 
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/juanfont/headscale/hscontrol/types"
@@ -34,6 +35,23 @@ type AuthRejectRequestBody struct {
 	AuthID string `json:"authId,omitempty"`
 }
 
+// AuthRequestSummary is one entry in the listAuthRequests response — enough
+// to identify a pending request and let an admin decide whether to approve
+// or reject it without already knowing its authId out of band.
+type AuthRequestSummary struct {
+	AuthID    string    `json:"authId"`
+	Kind      string    `enum:"REGISTRATION,SSH_CHECK" json:"kind"`
+	CreatedAt time.Time `json:"createdAt"`
+
+	// Populated for Kind == "REGISTRATION"; zero value otherwise.
+	Hostname   string `json:"hostname"`
+	MachineKey string `json:"machineKey"`
+
+	// Populated for Kind == "SSH_CHECK"; nil otherwise.
+	SrcNode *Node `json:"srcNode"`
+	DstNode *Node `json:"dstNode"`
+}
+
 type (
 	authRegisterInput struct {
 		Body AuthRegisterRequestBody
@@ -60,6 +78,15 @@ type (
 	}
 	authRejectOutput struct {
 		Body struct{}
+	}
+)
+
+type (
+	listAuthRequestsInput  struct{}
+	listAuthRequestsOutput struct {
+		Body struct {
+			Requests []AuthRequestSummary `json:"requests"`
+		}
 	}
 )
 
@@ -143,6 +170,48 @@ func registerAuth(api huma.API, b Backend) {
 		})
 
 		return &authRejectOutput{}, nil
+	})
+
+	huma.Register(api, huma.Operation{
+		OperationID: "listAuthRequests",
+		Method:      http.MethodGet,
+		Path:        "/api/v1/auth",
+		Summary:     "List pending auth requests",
+		Tags:        []string{"Auth"},
+		Security:    bearerAuth,
+	}, func(ctx context.Context, in *listAuthRequestsInput) (*listAuthRequestsOutput, error) {
+		out := &listAuthRequestsOutput{}
+		out.Body.Requests = make([]AuthRequestSummary, 0)
+
+		for _, entry := range b.State.ListAuthCacheEntries() {
+			summary := AuthRequestSummary{
+				AuthID:    entry.ID.String(),
+				CreatedAt: entry.Request.CreatedAt,
+			}
+
+			switch {
+			case entry.Request.IsRegistration():
+				summary.Kind = "REGISTRATION"
+				data := entry.Request.RegistrationData()
+				summary.Hostname = data.Hostname
+				summary.MachineKey = data.MachineKey.String()
+			case entry.Request.IsSSHCheck():
+				summary.Kind = "SSH_CHECK"
+				binding := entry.Request.SSHCheckBinding()
+				if srcNode, ok := b.State.GetNodeByID(binding.SrcNodeID); ok {
+					src := nodeFromView(srcNode)
+					summary.SrcNode = &src
+				}
+				if dstNode, ok := b.State.GetNodeByID(binding.DstNodeID); ok {
+					dst := nodeFromView(dstNode)
+					summary.DstNode = &dst
+				}
+			}
+
+			out.Body.Requests = append(out.Body.Requests, summary)
+		}
+
+		return out, nil
 	})
 }
 

@@ -118,6 +118,43 @@ func TestAPIV1AuthRegister(t *testing.T) {
 	})
 }
 
+func TestAPIV1ListAuthRequests(t *testing.T) {
+	h := newAPIV1Harness(t)
+
+	regID := types.MustAuthID()
+	seedAuthRequest(
+		"alice", regID,
+		key.NewMachine().Public(),
+		key.NewNode().Public(),
+		key.NewDisco().Public(),
+		"pending-reg-node",
+	)(t, h.app)
+
+	sshID := types.MustAuthID()
+	h.app.state.SetAuthCacheEntry(sshID, types.NewSSHCheckAuthRequest(types.NodeID(1), types.NodeID(2)))
+
+	res := h.callHuma(http.MethodGet, "/api/v1/auth", nil)
+	require.Equal(t, http.StatusOK, res.status)
+
+	var got struct {
+		Requests []map[string]any `json:"requests"`
+	}
+	require.NoError(t, json.Unmarshal(res.body, &got))
+	require.Len(t, got.Requests, 2)
+
+	byID := map[string]map[string]any{}
+	for _, r := range got.Requests {
+		byID[r["authId"].(string)] = r
+	}
+
+	require.Contains(t, byID, regID.String())
+	assert.Equal(t, "REGISTRATION", byID[regID.String()]["kind"])
+	assert.Equal(t, "pending-reg-node", byID[regID.String()]["hostname"])
+
+	require.Contains(t, byID, sshID.String())
+	assert.Equal(t, "SSH_CHECK", byID[sshID.String()]["kind"])
+}
+
 func TestAPIV1AuthApprove(t *testing.T) {
 	t.Run("happy path", func(t *testing.T) {
 		h := newAPIV1Harness(t)
