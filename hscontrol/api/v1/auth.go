@@ -197,11 +197,14 @@ func registerAuth(api huma.API, b Backend) {
 				summary.MachineKey = data.MachineKey.String()
 			case entry.Request.IsSSHCheck():
 				summary.Kind = "SSH_CHECK"
+
 				binding := entry.Request.SSHCheckBinding()
+
 				if srcNode, ok := b.State.GetNodeByID(binding.SrcNodeID); ok {
 					src := nodeFromView(srcNode)
 					summary.SrcNode = &src
 				}
+
 				if dstNode, ok := b.State.GetNodeByID(binding.DstNodeID); ok {
 					dst := nodeFromView(dstNode)
 					summary.DstNode = &dst
@@ -225,7 +228,9 @@ func pendingAuthRequest(b Backend, rawID string) (*types.AuthRequest, error) {
 
 	authReq, ok := b.State.GetAuthCacheEntry(authID)
 	if !ok {
-		return nil, huma.Error404NotFound("no pending auth session for auth_id " + authID.String())
+		return nil, huma.Error404NotFound(
+			"no pending auth session for auth_id " + authID.String(),
+		)
 	}
 
 	return authReq, nil

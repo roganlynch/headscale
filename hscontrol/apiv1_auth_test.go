@@ -51,7 +51,14 @@ func TestAPIV1AuthRegister(t *testing.T) {
 		nodeKey := key.NewNode().Public()
 		discoKey := key.NewDisco().Public()
 
-		seed := seedAuthRequest("alice", authID, machineKey, nodeKey, discoKey, "regnode")
+		seed := seedAuthRequest(
+			"alice",
+			authID,
+			machineKey,
+			nodeKey,
+			discoKey,
+			"regnode",
+		)
 		body := fmt.Appendf(nil, `{"user":"alice","authId":%q}`, authID.String())
 
 		assertParityIsolated(t, seed, http.MethodPost, "/api/v1/auth/register", body)
@@ -102,7 +109,11 @@ func TestAPIV1AuthRegister(t *testing.T) {
 
 	t.Run("unknown user parity", func(t *testing.T) {
 		h := newAPIV1Harness(t)
-		body := fmt.Appendf(nil, `{"user":"ghost","authId":%q}`, types.MustAuthID().String())
+		body := fmt.Appendf(
+			nil,
+			`{"user":"ghost","authId":%q}`,
+			types.MustAuthID().String(),
+		)
 		res := h.assertParity(t, http.MethodPost, "/api/v1/auth/register", body)
 		assertStatus(t, res, http.StatusNotFound)
 	})
@@ -113,7 +124,11 @@ func TestAPIV1AuthRegister(t *testing.T) {
 		h := newAPIV1Harness(t)
 		seedUsers("alice")(t, h.app)
 
-		body := fmt.Appendf(nil, `{"user":"alice","authId":%q}`, types.MustAuthID().String())
+		body := fmt.Appendf(
+			nil,
+			`{"user":"alice","authId":%q}`,
+			types.MustAuthID().String(),
+		)
 		res := h.assertParity(t, http.MethodPost, "/api/v1/auth/register", body)
 		assertStatus(t, res, http.StatusNotFound)
 	})
@@ -151,7 +166,7 @@ func TestAPIV1ListAuthRequests(t *testing.T) {
 		sshID := types.MustAuthID()
 		h.app.state.SetAuthCacheEntry(
 			sshID,
-			types.NewSSHCheckAuthRequest(types.NodeID(srcNode.ID), types.NodeID(dstNode.ID)),
+			types.NewSSHCheckAuthRequest(srcNode.ID, dstNode.ID),
 		)
 
 		res := h.callHuma(http.MethodGet, "/api/v1/auth", nil)
@@ -164,8 +179,12 @@ func TestAPIV1ListAuthRequests(t *testing.T) {
 		require.Len(t, got.Requests, 2)
 
 		byID := map[string]map[string]any{}
+
 		for _, r := range got.Requests {
-			byID[r["authId"].(string)] = r
+			authID, ok := r["authId"].(string)
+			require.True(t, ok, "authId should be a string")
+
+			byID[authID] = r
 		}
 
 		require.Contains(t, byID, regID.String())
@@ -174,8 +193,11 @@ func TestAPIV1ListAuthRequests(t *testing.T) {
 		assert.Equal(t, "pending-reg-node", regEntry["hostname"])
 		assert.Equal(t, regMachineKey.String(), regEntry["machineKey"])
 		assert.NotEmpty(t, regEntry["createdAt"])
-		_, err := time.Parse(time.RFC3339, regEntry["createdAt"].(string))
-		assert.NoError(t, err)
+		createdAt, ok := regEntry["createdAt"].(string)
+		require.True(t, ok, "createdAt should be a string")
+
+		_, err := time.Parse(time.RFC3339, createdAt)
+		require.NoError(t, err)
 
 		require.Contains(t, byID, sshID.String())
 		sshEntry := byID[sshID.String()]
@@ -207,7 +229,11 @@ func TestAPIV1AuthApprove(t *testing.T) {
 		assert.JSONEq(t, `{}`, string(res.body))
 
 		verdict := <-authReq.WaitForAuth()
-		assert.True(t, verdict.Accept(), "approve must finish the session with a passing verdict")
+		assert.True(
+			t,
+			verdict.Accept(),
+			"approve must finish the session with a passing verdict",
+		)
 	})
 
 	// Malformed auth_id: AuthApprove returns codes.InvalidArgument → 400.
@@ -242,7 +268,11 @@ func TestAPIV1AuthReject(t *testing.T) {
 		assert.JSONEq(t, `{}`, string(res.body))
 
 		verdict := <-authReq.WaitForAuth()
-		assert.False(t, verdict.Accept(), "reject must finish the session with a failing verdict")
+		assert.False(
+			t,
+			verdict.Accept(),
+			"reject must finish the session with a failing verdict",
+		)
 	})
 
 	t.Run("invalid auth_id parity", func(t *testing.T) {

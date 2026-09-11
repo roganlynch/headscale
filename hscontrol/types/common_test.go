@@ -17,7 +17,11 @@ func TestNewSSHCheckAuthRequestBinding(t *testing.T) {
 	req := NewSSHCheckAuthRequest(src, dst)
 
 	require.True(t, req.IsSSHCheck(), "SSH-check request must report IsSSHCheck=true")
-	require.False(t, req.IsRegistration(), "SSH-check request must not report IsRegistration")
+	require.False(
+		t,
+		req.IsRegistration(),
+		"SSH-check request must not report IsRegistration",
+	)
 
 	binding := req.SSHCheckBinding()
 	assert.Equal(t, src, binding.SrcNodeID, "SrcNodeID must match")
@@ -36,9 +40,22 @@ func TestNewRegisterAuthRequestPayload(t *testing.T) {
 
 	req := NewRegisterAuthRequest(data)
 
-	require.True(t, req.IsRegistration(), "registration request must report IsRegistration=true")
-	require.False(t, req.IsSSHCheck(), "registration request must not report IsSSHCheck")
-	assert.Same(t, data, req.RegistrationData(), "RegistrationData() must return the supplied pointer")
+	require.True(
+		t,
+		req.IsRegistration(),
+		"registration request must report IsRegistration=true",
+	)
+	require.False(
+		t,
+		req.IsSSHCheck(),
+		"registration request must not report IsSSHCheck",
+	)
+	assert.Same(
+		t,
+		data,
+		req.RegistrationData(),
+		"RegistrationData() must return the supplied pointer",
+	)
 
 	assert.Panics(t, func() {
 		_ = req.SSHCheckBinding()
@@ -91,8 +108,16 @@ func TestNewAuthRequestSetsCreatedAt(t *testing.T) {
 	after := time.Now()
 
 	for _, req := range []*AuthRequest{plain, reg, ssh} {
-		assert.False(t, req.CreatedAt.Before(before), "CreatedAt must not be before construction started")
-		assert.False(t, req.CreatedAt.After(after), "CreatedAt must not be after construction finished")
+		assert.False(
+			t,
+			req.CreatedAt.Before(before),
+			"CreatedAt must not be before construction started",
+		)
+		assert.False(
+			t,
+			req.CreatedAt.After(after),
+			"CreatedAt must not be after construction finished",
+		)
 	}
 }
 
@@ -114,7 +139,12 @@ func TestDefaultBatcherWorkersFor(t *testing.T) {
 	for _, test := range tests {
 		result := DefaultBatcherWorkersFor(test.cpuCount)
 		if result != test.expected {
-			t.Errorf("DefaultBatcherWorkersFor(%d) = %d, expected %d", test.cpuCount, result, test.expected)
+			t.Errorf(
+				"DefaultBatcherWorkersFor(%d) = %d, expected %d",
+				test.cpuCount,
+				result,
+				test.expected,
+			)
 		}
 	}
 }

@@ -37,7 +37,12 @@ func TestAuthCacheBoundedLRU(t *testing.T) {
 	}
 
 	// Cap should be respected.
-	assert.Equal(t, maxEntries, cache.Len(), "cache must not exceed the configured maxEntries")
+	assert.Equal(
+		t,
+		maxEntries,
+		cache.Len(),
+		"cache must not exceed the configured maxEntries",
+	)
 
 	// The oldest entry must have been evicted.
 	_, ok := cache.Get(ids[0])
@@ -76,7 +81,10 @@ func TestListAuthCacheEntries(t *testing.T) {
 	id2 := types.MustAuthID()
 
 	s.SetAuthCacheEntry(id1, types.NewAuthRequest())
-	s.SetAuthCacheEntry(id2, types.NewSSHCheckAuthRequest(types.NodeID(1), types.NodeID(2)))
+	s.SetAuthCacheEntry(
+		id2,
+		types.NewSSHCheckAuthRequest(types.NodeID(1), types.NodeID(2)),
+	)
 
 	entries := s.ListAuthCacheEntries()
 	require.Len(t, entries, 2)
@@ -85,6 +93,7 @@ func TestListAuthCacheEntries(t *testing.T) {
 	for _, e := range entries {
 		ids[e.ID] = true
 	}
+
 	assert.True(t, ids[id1])
 	assert.True(t, ids[id2])
 }
