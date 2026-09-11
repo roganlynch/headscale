@@ -21,6 +21,24 @@ const (
 	BearerScopes bearerContextKey = "bearer.Scopes"
 )
 
+// Defines values for AuthRequestSummaryKind.
+const (
+	REGISTRATION AuthRequestSummaryKind = "REGISTRATION"
+	SSHCHECK     AuthRequestSummaryKind = "SSH_CHECK"
+)
+
+// Valid indicates whether the value is a known member of the AuthRequestSummaryKind enum.
+func (e AuthRequestSummaryKind) Valid() bool {
+	switch e {
+	case REGISTRATION:
+		return true
+	case SSHCHECK:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for NodeRegisterMethod.
 const (
 	REGISTERMETHODAUTHKEY     NodeRegisterMethod = "REGISTER_METHOD_AUTH_KEY"
@@ -80,6 +98,20 @@ type AuthRejectOutputBody = map[string]interface{}
 type AuthRejectRequestBody struct {
 	AuthId *string `json:"authId,omitempty"`
 }
+
+// AuthRequestSummary defines model for AuthRequestSummary.
+type AuthRequestSummary struct {
+	AuthId     string                 `json:"authId"`
+	CreatedAt  time.Time              `json:"createdAt"`
+	DstNode    *Node                  `json:"dstNode,omitempty"`
+	Hostname   string                 `json:"hostname"`
+	Kind       AuthRequestSummaryKind `json:"kind"`
+	MachineKey string                 `json:"machineKey"`
+	SrcNode    *Node                  `json:"srcNode,omitempty"`
+}
+
+// AuthRequestSummaryKind defines model for AuthRequestSummary.Kind.
+type AuthRequestSummaryKind string
 
 // BackfillNodeIPsOutputBody defines model for BackfillNodeIPsOutputBody.
 type BackfillNodeIPsOutputBody struct {
@@ -200,6 +232,11 @@ type HealthResponseBody struct {
 // ListApiKeysOutputBody defines model for ListApiKeysOutputBody.
 type ListApiKeysOutputBody struct {
 	ApiKeys []ApiKey `json:"apiKeys"`
+}
+
+// ListAuthRequestsOutputBody defines model for ListAuthRequestsOutputBody.
+type ListAuthRequestsOutputBody struct {
+	Requests []AuthRequestSummary `json:"requests"`
 }
 
 // ListNodesOutputBody defines model for ListNodesOutputBody.
@@ -483,6 +520,9 @@ type ClientInterface interface {
 	// DeleteApiKey request
 	DeleteApiKey(ctx context.Context, prefix string, params *DeleteApiKeyParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 
+	// ListAuthRequests request
+	ListAuthRequests(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
+
 	// AuthApproveWithBody request with any body
 	AuthApproveWithBody(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
 
@@ -645,6 +685,18 @@ func (c *Client) ExpireApiKey(ctx context.Context, body ExpireApiKeyJSONRequestB
 
 func (c *Client) DeleteApiKey(ctx context.Context, prefix string, params *DeleteApiKeyParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewDeleteApiKeyRequest(c.Server, prefix, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) ListAuthRequests(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewListAuthRequestsRequest(c.Server)
 	if err != nil {
 		return nil, err
 	}
@@ -1260,6 +1312,33 @@ func NewDeleteApiKeyRequest(server string, prefix string, params *DeleteApiKeyPa
 	}
 
 	req, err := http.NewRequest(http.MethodDelete, queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewListAuthRequestsRequest generates requests for ListAuthRequests
+func NewListAuthRequestsRequest(server string) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/api/v1/auth")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest(http.MethodGet, queryURL.String(), nil)
 	if err != nil {
 		return nil, err
 	}
@@ -2398,6 +2477,9 @@ type ClientWithResponsesInterface interface {
 	// DeleteApiKeyWithResponse request
 	DeleteApiKeyWithResponse(ctx context.Context, prefix string, params *DeleteApiKeyParams, reqEditors ...RequestEditorFn) (*DeleteApiKeyResponse, error)
 
+	// ListAuthRequestsWithResponse request
+	ListAuthRequestsWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*ListAuthRequestsResponse, error)
+
 	// AuthApproveWithBodyWithResponse request with any body
 	AuthApproveWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*AuthApproveResponse, error)
 
@@ -2616,6 +2698,37 @@ func (r DeleteApiKeyResponse) StatusCode() int {
 
 // ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
 func (r DeleteApiKeyResponse) ContentType() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Header.Get("Content-Type")
+	}
+	return ""
+}
+
+type ListAuthRequestsResponse struct {
+	Body                          []byte
+	HTTPResponse                  *http.Response
+	JSON200                       *ListAuthRequestsOutputBody
+	ApplicationproblemJSONDefault *ErrorModel
+}
+
+// Status returns HTTPResponse.Status
+func (r ListAuthRequestsResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r ListAuthRequestsResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+// ContentType is a convenience method to retrieve the Content-Type value from the HTTP response headers
+func (r ListAuthRequestsResponse) ContentType() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Header.Get("Content-Type")
 	}
@@ -3449,6 +3562,15 @@ func (c *ClientWithResponses) DeleteApiKeyWithResponse(ctx context.Context, pref
 	return ParseDeleteApiKeyResponse(rsp)
 }
 
+// ListAuthRequestsWithResponse request returning *ListAuthRequestsResponse
+func (c *ClientWithResponses) ListAuthRequestsWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*ListAuthRequestsResponse, error) {
+	rsp, err := c.ListAuthRequests(ctx, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseListAuthRequestsResponse(rsp)
+}
+
 // AuthApproveWithBodyWithResponse request with arbitrary body returning *AuthApproveResponse
 func (c *ClientWithResponses) AuthApproveWithBodyWithResponse(ctx context.Context, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*AuthApproveResponse, error) {
 	rsp, err := c.AuthApproveWithBody(ctx, contentType, body, reqEditors...)
@@ -3885,6 +4007,39 @@ func ParseDeleteApiKeyResponse(rsp *http.Response) (*DeleteApiKeyResponse, error
 	switch {
 	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
 		var dest DeleteApiKeyOutputBody
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && true:
+		var dest ErrorModel
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.ApplicationproblemJSONDefault = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseListAuthRequestsResponse parses an HTTP response from a ListAuthRequestsWithResponse call
+func ParseListAuthRequestsResponse(rsp *http.Response) (*ListAuthRequestsResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &ListAuthRequestsResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest ListAuthRequestsOutputBody
 		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
 			return nil, err
 		}
