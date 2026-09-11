@@ -2,6 +2,7 @@ package types
 
 import (
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -76,6 +77,23 @@ func TestPendingRegistrationConfirmation(t *testing.T) {
 	require.NotNil(t, got, "PendingConfirmation must return the stored value")
 	assert.Equal(t, uint(42), got.UserID)
 	assert.Equal(t, "csrf-marker", got.CSRF)
+}
+
+// TestNewAuthRequestSetsCreatedAt verifies every constructor stamps
+// CreatedAt so a pending-request listing can be sorted/displayed by age.
+func TestNewAuthRequestSetsCreatedAt(t *testing.T) {
+	before := time.Now()
+
+	plain := NewAuthRequest()
+	reg := NewRegisterAuthRequest(&RegistrationData{Hostname: "node-a"})
+	ssh := NewSSHCheckAuthRequest(NodeID(1), NodeID(2))
+
+	after := time.Now()
+
+	for _, req := range []*AuthRequest{plain, reg, ssh} {
+		assert.False(t, req.CreatedAt.Before(before), "CreatedAt must not be before construction started")
+		assert.False(t, req.CreatedAt.After(after), "CreatedAt must not be after construction finished")
+	}
 }
 
 func TestDefaultBatcherWorkersFor(t *testing.T) {

@@ -1629,6 +1629,29 @@ func (s *State) GetAuthCacheEntry(id types.AuthID) (*types.AuthRequest, bool) {
 	return s.authCache.Get(id)
 }
 
+// AuthCacheEntry pairs a pending auth request with the ID it is stored
+// under — the underlying LRU only hands back keys and values separately.
+type AuthCacheEntry struct {
+	ID      types.AuthID
+	Request *types.AuthRequest
+}
+
+// ListAuthCacheEntries returns a snapshot of all pending auth requests.
+// It uses Peek rather than Get so listing does not disturb the cache's
+// LRU recency or its TTL-based eviction.
+func (s *State) ListAuthCacheEntries() []AuthCacheEntry {
+	keys := s.authCache.Keys()
+	entries := make([]AuthCacheEntry, 0, len(keys))
+
+	for _, id := range keys {
+		if req, ok := s.authCache.Peek(id); ok {
+			entries = append(entries, AuthCacheEntry{ID: id, Request: req})
+		}
+	}
+
+	return entries
+}
+
 // SetAuthCacheEntry stores a pending auth request in the cache.
 func (s *State) SetAuthCacheEntry(id types.AuthID, entry *types.AuthRequest) {
 	s.authCache.Add(id, entry)

@@ -117,6 +117,10 @@ type PendingRegistrationConfirmation struct {
 // have a single canonical instance even when stored in caches that
 // internally copy values.
 type AuthRequest struct {
+	// CreatedAt is when this pending request was minted. Used by
+	// listing/observability consumers; not read by the auth flow itself.
+	CreatedAt time.Time
+
 	// regData is populated for node-registration flows (interactive web
 	// or OIDC). It carries the cached registration payload that the
 	// auth callback uses to promote this request into a real node.
@@ -149,8 +153,9 @@ type AuthRequest struct {
 // for non-registration flows that only need a verdict channel.
 func NewAuthRequest() *AuthRequest {
 	return &AuthRequest{
-		finished: make(chan AuthVerdict, 1),
-		closed:   &atomic.Bool{},
+		CreatedAt: time.Now(),
+		finished:  make(chan AuthVerdict, 1),
+		closed:    &atomic.Bool{},
 	}
 }
 
@@ -159,9 +164,10 @@ func NewAuthRequest() *AuthRequest {
 // stored by pointer; callers must not mutate it after handing it off.
 func NewRegisterAuthRequest(data *RegistrationData) *AuthRequest {
 	return &AuthRequest{
-		regData:  data,
-		finished: make(chan AuthVerdict, 1),
-		closed:   &atomic.Bool{},
+		CreatedAt: time.Now(),
+		regData:   data,
+		finished:  make(chan AuthVerdict, 1),
+		closed:    &atomic.Bool{},
 	}
 }
 
@@ -171,6 +177,7 @@ func NewRegisterAuthRequest(data *RegistrationData) *AuthRequest {
 // before recording any verdict.
 func NewSSHCheckAuthRequest(src, dst NodeID) *AuthRequest {
 	return &AuthRequest{
+		CreatedAt: time.Now(),
 		sshBinding: &SSHCheckBinding{
 			SrcNodeID: src,
 			DstNodeID: dst,

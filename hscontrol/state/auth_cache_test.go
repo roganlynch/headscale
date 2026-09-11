@@ -62,3 +62,29 @@ func TestAuthCacheBoundedLRU(t *testing.T) {
 		assert.True(t, ok, "non-evicted entry %d should still be in the cache", i)
 	}
 }
+
+// TestListAuthCacheEntries verifies that ListAuthCacheEntries returns a
+// snapshot of every pending auth request currently held in the cache,
+// paired with the AuthID it is stored under.
+func TestListAuthCacheEntries(t *testing.T) {
+	cfg := persistTestConfig(t.TempDir() + "/headscale.db")
+	s, err := NewState(cfg)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = s.Close() })
+
+	id1 := types.MustAuthID()
+	id2 := types.MustAuthID()
+
+	s.SetAuthCacheEntry(id1, types.NewAuthRequest())
+	s.SetAuthCacheEntry(id2, types.NewSSHCheckAuthRequest(types.NodeID(1), types.NodeID(2)))
+
+	entries := s.ListAuthCacheEntries()
+	require.Len(t, entries, 2)
+
+	ids := map[types.AuthID]bool{}
+	for _, e := range entries {
+		ids[e.ID] = true
+	}
+	assert.True(t, ids[id1])
+	assert.True(t, ids[id2])
+}
