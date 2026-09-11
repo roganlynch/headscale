@@ -48,8 +48,8 @@ type AuthRequestSummary struct {
 	MachineKey string `json:"machineKey"`
 
 	// Populated for Kind == "SSH_CHECK"; nil otherwise.
-	SrcNode *Node `json:"srcNode"`
-	DstNode *Node `json:"dstNode"`
+	SrcNode *Node `json:"srcNode,omitempty"`
+	DstNode *Node `json:"dstNode,omitempty"`
 }
 
 type (
@@ -85,7 +85,7 @@ type (
 	listAuthRequestsInput  struct{}
 	listAuthRequestsOutput struct {
 		Body struct {
-			Requests []AuthRequestSummary `json:"requests"`
+			Requests []AuthRequestSummary `json:"requests" nullable:"false"`
 		}
 	}
 )

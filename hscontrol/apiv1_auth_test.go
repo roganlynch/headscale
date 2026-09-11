@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/juanfont/headscale/hscontrol/types"
 	"github.com/stretchr/testify/assert"
@@ -119,40 +120,76 @@ func TestAPIV1AuthRegister(t *testing.T) {
 }
 
 func TestAPIV1ListAuthRequests(t *testing.T) {
-	h := newAPIV1Harness(t)
+	t.Run("empty cache returns empty list, not null", func(t *testing.T) {
+		h := newAPIV1Harness(t)
 
-	regID := types.MustAuthID()
-	seedAuthRequest(
-		"alice", regID,
-		key.NewMachine().Public(),
-		key.NewNode().Public(),
-		key.NewDisco().Public(),
-		"pending-reg-node",
-	)(t, h.app)
+		res := h.callHuma(http.MethodGet, "/api/v1/auth", nil)
+		require.Equal(t, http.StatusOK, res.status)
 
-	sshID := types.MustAuthID()
-	h.app.state.SetAuthCacheEntry(sshID, types.NewSSHCheckAuthRequest(types.NodeID(1), types.NodeID(2)))
+		assert.JSONEq(t, `{"requests":[]}`, string(res.body))
+	})
 
-	res := h.callHuma(http.MethodGet, "/api/v1/auth", nil)
-	require.Equal(t, http.StatusOK, res.status)
+	t.Run("populated cache", func(t *testing.T) {
+		h := newAPIV1Harness(t)
 
-	var got struct {
-		Requests []map[string]any `json:"requests"`
-	}
-	require.NoError(t, json.Unmarshal(res.body, &got))
-	require.Len(t, got.Requests, 2)
+		regMachineKey := key.NewMachine().Public()
+		regID := types.MustAuthID()
+		seedAuthRequest(
+			"alice", regID,
+			regMachineKey,
+			key.NewNode().Public(),
+			key.NewDisco().Public(),
+			"pending-reg-node",
+		)(t, h.app)
 
-	byID := map[string]map[string]any{}
-	for _, r := range got.Requests {
-		byID[r["authId"].(string)] = r
-	}
+		nodeUser := h.app.state.CreateUserForTest("bob")
+		srcNode := h.app.state.CreateNodeForTest(nodeUser, "ssh-src-node")
+		h.app.state.PutNodeInStoreForTest(*srcNode)
+		dstNode := h.app.state.CreateNodeForTest(nodeUser, "ssh-dst-node")
+		h.app.state.PutNodeInStoreForTest(*dstNode)
 
-	require.Contains(t, byID, regID.String())
-	assert.Equal(t, "REGISTRATION", byID[regID.String()]["kind"])
-	assert.Equal(t, "pending-reg-node", byID[regID.String()]["hostname"])
+		sshID := types.MustAuthID()
+		h.app.state.SetAuthCacheEntry(
+			sshID,
+			types.NewSSHCheckAuthRequest(types.NodeID(srcNode.ID), types.NodeID(dstNode.ID)),
+		)
 
-	require.Contains(t, byID, sshID.String())
-	assert.Equal(t, "SSH_CHECK", byID[sshID.String()]["kind"])
+		res := h.callHuma(http.MethodGet, "/api/v1/auth", nil)
+		require.Equal(t, http.StatusOK, res.status)
+
+		var got struct {
+			Requests []map[string]any `json:"requests"`
+		}
+		require.NoError(t, json.Unmarshal(res.body, &got))
+		require.Len(t, got.Requests, 2)
+
+		byID := map[string]map[string]any{}
+		for _, r := range got.Requests {
+			byID[r["authId"].(string)] = r
+		}
+
+		require.Contains(t, byID, regID.String())
+		regEntry := byID[regID.String()]
+		assert.Equal(t, "REGISTRATION", regEntry["kind"])
+		assert.Equal(t, "pending-reg-node", regEntry["hostname"])
+		assert.Equal(t, regMachineKey.String(), regEntry["machineKey"])
+		assert.NotEmpty(t, regEntry["createdAt"])
+		_, err := time.Parse(time.RFC3339, regEntry["createdAt"].(string))
+		assert.NoError(t, err)
+
+		require.Contains(t, byID, sshID.String())
+		sshEntry := byID[sshID.String()]
+		assert.Equal(t, "SSH_CHECK", sshEntry["kind"])
+		assert.NotEmpty(t, sshEntry["createdAt"])
+
+		gotSrcNode, ok := sshEntry["srcNode"].(map[string]any)
+		require.True(t, ok, "srcNode should be populated for SSH_CHECK")
+		assert.Equal(t, fmt.Sprintf("%d", srcNode.ID), gotSrcNode["id"])
+
+		gotDstNode, ok := sshEntry["dstNode"].(map[string]any)
+		require.True(t, ok, "dstNode should be populated for SSH_CHECK")
+		assert.Equal(t, fmt.Sprintf("%d", dstNode.ID), gotDstNode["id"])
+	})
 }
 
 func TestAPIV1AuthApprove(t *testing.T) {
