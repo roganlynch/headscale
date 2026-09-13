@@ -218,6 +218,47 @@ verify:
         echo "verify: all checks passed"
       '
 
+# Manual-only -- deliberately not part of the tag-triggered
+# dispatch/build/package/verify/publish pipeline above. Runs the new
+# headscale-ui Playwright integration (integration/uic,
+# integration/headscale_ui_test.go) end to end: real headscale, real
+# headscale-ui, and (TestHeadscaleUIPlaywrightRealClient) a real Tailscale
+# client, via `go run ./cmd/hi run`. ~45min+, Docker-in-Docker.
+#
+# Requires four CI/CD variables pointing at prebuilt images -- hsic/tsic
+# refuse to build from source when the CI predefined variable is set (see
+# util.IsCI(), integration/hsic/hsic.go, integration/tsic/tsic.go):
+#   HEADSCALE_INTEGRATION_HEADSCALE_IMAGE  -- this repo's own headscale image
+#   HEADSCALE_INTEGRATION_TAILSCALE_IMAGE  -- a tailscale client image
+#   HEADSCALE_INTEGRATION_UI_IMAGE         -- internal/headscale-ui's app image
+#   HEADSCALE_INTEGRATION_UI_TEST_IMAGE    -- internal/headscale-ui's playwright
+#                                              image (.../headscale-ui/playwright)
+integration-ui:
+  stage: verify
+  image: golang:1.26-alpine
+  services:
+    - docker:27-dind
+  rules:
+    - when: manual
+      allow_failure: true
+  variables:
+    DOCKER_TLS_CERTDIR: "/certs"
+  before_script:
+    - apk add --no-cache docker-cli git
+  script:
+    - |
+      set -eu
+      : "${HEADSCALE_INTEGRATION_HEADSCALE_IMAGE:?set this CI/CD variable}"
+      : "${HEADSCALE_INTEGRATION_TAILSCALE_IMAGE:?set this CI/CD variable}"
+      : "${HEADSCALE_INTEGRATION_UI_IMAGE:?set this CI/CD variable to internal/headscale-ui's published app image}"
+      : "${HEADSCALE_INTEGRATION_UI_TEST_IMAGE:?set this CI/CD variable to internal/headscale-ui's published playwright image}"
+      go run ./cmd/hi run "TestHeadscaleUI.*" --timeout=45m
+  artifacts:
+    when: always
+    paths:
+      - control_logs/
+    expire_in: 3 days
+
 # Publishes into the SAME shared repo.internal.lan / pkgs.internal.lan apt
 # pool that nebula-sync and chrony-exporter use, but -- like every other
 # publisher on this host -- via its own dedicated headscale-deploy system
